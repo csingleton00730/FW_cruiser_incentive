@@ -72,6 +72,7 @@ export function UploadStep({ q, res, update, updateSettings }: StepProps) {
         <Box k="audit" title="2. CASL audits" what="The CASL export (whole database is fine — refresh it first). Only this quarter's approved audits are used." loaded={q.audits.length > 0} fileName={q.auditFileName} onFile={onAudit} hint=".xlsx" />
         <Box k="mult" title="3. SP/MP report (Andy)" what="The SP/MP sort workbook. Only the scale-up factor table on the Carbon Calcs sheet is read; projects not in it get a multiplier of 1." loaded={q.multiplierTable.length > 0} fileName={q.multiplierFileName} onFile={onMult} hint=".xlsx" />
       </div>
+      {res.periodMismatch && <Notice kind="error" title={`This time report is not ${q.label}.`}>Its dates run {res.periodMismatch.reportMonths[0]} to {res.periodMismatch.reportMonths[res.periodMismatch.reportMonths.length - 1]}. Upload the right quarter's report, or rename the quarter (pencil next to its name at the top).</Notice>}
       {q.timeRows.length > 0 && (
         <div className="grid cols-4">
           <Stat value={q.timeRows.length.toLocaleString()} label="time entries" tone="plain" />
@@ -122,6 +123,7 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
 
   return (
     <div className="stack">
+      {res.periodMismatch && <Notice kind="error" title={`This time report is not ${q.label}.`}>Its dates run {res.periodMismatch.reportMonths[0]} to {res.periodMismatch.reportMonths[res.periodMismatch.reportMonths.length - 1]}. Upload the right quarter's report or rename the quarter.</Notice>}
       <div className="grid cols-4">
         <Stat value={res.rowsUsed.toLocaleString()} label="time entries counted" />
         <Stat value={removedCount.toLocaleString()} label="entries removed by policy" tone="plain" />
@@ -265,7 +267,7 @@ export function ResultsStep({ q, res, update }: StepProps) {
   const [dlMsg, setDlMsg] = useState<string | null>(null)
   const el = res.cruisers.filter(c => c.eligible).sort((a, b) => a.center.localeCompare(b.center) || a.employee.localeCompare(b.employee))
   const sum = (f: (c: typeof el[number]) => number) => el.reduce((s, c) => s + f(c), 0)
-  const ready = q.timeRows.length > 0 && q.audits.length > 0 && el.length > 0
+  const ready = q.timeRows.length > 0 && q.audits.length > 0 && el.length > 0 && !res.periodMismatch
   const blockers = res.flags.filter(f => f.severity === 'warn')
   const onDownload = async () => {
     setDlMsg('Preparing workbook…')
@@ -275,7 +277,8 @@ export function ResultsStep({ q, res, update }: StepProps) {
   }
   return (
     <div className="stack">
-      {!ready && <Notice kind="warn">Results need the time report, the CASL audits and at least one eligible cruiser.</Notice>}
+      {res.periodMismatch && <Notice kind="error" title={`Blocked: the time report is not ${q.label}.`}>Its dates run {res.periodMismatch.reportMonths[0]} to {res.periodMismatch.reportMonths[res.periodMismatch.reportMonths.length - 1]}. Upload the right quarter's report or rename the quarter before downloading.</Notice>}
+      {!ready && !res.periodMismatch && <Notice kind="warn">Results need the time report, the CASL audits and at least one eligible cruiser.</Notice>}
       {ready && blockers.length > 0 && q.status !== 'final' && <Notice kind="warn" title={`${blockers.length} item(s) on the Review step still need a look before this is final.`} />}
       <div className="grid cols-4">
         <Stat value={money(res.totalPool)} label={`total pool · ${res.eligibleCount} eligible cruisers`} />

@@ -90,11 +90,14 @@ export async function parseTimeExport(file: File): Promise<ParseResult<TimeRow>>
     customerName: pick(headers, ['CustName', 'Customer', 'Customer Name']),
     hours: pick(headers, ['CruisingHours', 'Cruising Hours', 'Hours']),
     acres: pick(headers, ['CruisingAcres', 'Cruising Acres', 'Acres']),
-    plots: pick(headers, ['original plots', 'CruisingPlots', 'Cruising Plots', 'Plots']),
+    plots: pick(headers, ['CruisingPlots', 'Cruising Plots', 'Plots']),
     noDays: pick(headers, ['NoDays', 'No Days', 'Days']),
     projType: pick(headers, ['Proj Type', 'ProjType', 'Project Type']),
     wc: pick(headers, ['WC', 'Work Code', 'WorkCode']),
   }
+  // The old workbook's Corrected tab keeps pre-multiplier plots in "original plots"; use it only when it actually has values.
+  const origCol = pick(headers, ['original plots'])
+  if (origCol && rows.some(r => r[origCol] != null && r[origCol] !== '')) col.plots = origCol
   const required: (keyof typeof col)[] = ['employee', 'empId', 'date', 'project', 'hours', 'acres', 'plots', 'wc']
   const missing = required.filter(k => !col[k])
   if (missing.length) problems.push(`This doesn't look like the cruising time report. Missing columns: ${missing.join(', ')}. Found: ${headers.join(', ')}`)

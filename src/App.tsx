@@ -137,6 +137,7 @@ function QuarterView({ initial }: { initial: Quarter }) {
   const [step, setStep] = useState(initial.timeRows.length && initial.audits.length ? (initial.status === 'final' ? 2 : 1) : 0)
   const saveTimer = useRef<number | null>(null)
   const [saved, setSaved] = useState(true)
+  const [renaming, setRenaming] = useState(false)
 
   const commit = useCallback((next: Quarter) => {
     setQ(next); setSaved(false)
@@ -154,7 +155,11 @@ function QuarterView({ initial }: { initial: Quarter }) {
     <div>
       <div className="row between" style={{ marginBottom: 10 }}>
         <div className="row">
-          <h2>{q.label}</h2>
+          {renaming
+            ? <input type="text" value={q.label} autoFocus style={{ width: 140, fontFamily: 'Georgia, serif', fontSize: 18, fontWeight: 700 }} aria-label="Quarter label"
+                onChange={e => update({ label: e.target.value })} onBlur={() => setRenaming(false)} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setRenaming(false) }} />
+            : <h2>{q.label}</h2>}
+          <button className="ghost small" title="Rename quarter" onClick={() => setRenaming(r => !r)}>✎</button>
           <span className={`pill ${q.status === 'final' ? 'ok' : 'warn'}`}>{q.status}</span>
         </div>
         <span className="small muted">{saved ? 'Saved' : 'Saving…'}</span>

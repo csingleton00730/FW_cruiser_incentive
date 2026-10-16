@@ -117,6 +117,8 @@ export interface CruiserProjectAgg {
   project: string
   projectDescription: string
   factor: number
+  /** True when the cruiser is eligible — only these rows define the standard (as the workbook's Corrected tab did). */
+  inStandard: boolean
   plots: number
   originalPlots: number
   hours: number
@@ -215,4 +217,6 @@ export interface QuarterResult {
   reviewed: ReviewedRow[]
   /** Every row after review edits (for the row finder). */
   rowsAfterReview: TimeRow[]
+  /** When the time report's dates don't belong to the labelled quarter. */
+  periodMismatch: { quarter: string; reportMonths: string[]; shareOutside: number } | null
 }

@@ -2,6 +2,7 @@ import { chromium } from 'playwright'
 import { createServer } from 'vite'
 
 const R = '/tmp/claude-0/-home-claude/3338104c-431e-536d-bc4e-9324fbb63541/scratchpad/real/'
+process.env.VITE_INCLUDE_SAMPLE = '1'
 const server = await createServer({ server: { port: 5199 }, logLevel: 'silent' })
 await server.listen()
 const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' })

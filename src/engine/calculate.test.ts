@@ -184,6 +184,30 @@ describe('data review', () => {
   })
 })
 
+describe('quarter guard', () => {
+  it('flags a time report whose dates are not in the labelled quarter and blocks nothing else', () => {
+    const q1rows = toRows(crystalQ1 as FixRow[])
+    const res = calculateQuarter(q1rows, [], base, { quarterLabel: '2Q 2026' })
+    expect(res.periodMismatch).not.toBeNull()
+    expect(res.periodMismatch!.reportMonths[0]).toBe('2026-01')
+    expect(res.flags.some(f => f.message.includes('not in 2Q 2026'))).toBe(true)
+    const ok = calculateQuarter(q1rows, [], base, { quarterLabel: '1Q 2026' })
+    expect(ok.periodMismatch).toBeNull()
+  })
+  it('puts zero-hour days with plots into the review table', () => {
+    const rows = toRows(rawQ2 as FixRow[])
+    const det = assignRowIds(rows.map(({ id: _id, ...rest }) => rest))
+    const res = calculateQuarter(det, [], DEFAULT_SETTINGS)
+    const zh = res.flags.filter(f => f.message.includes('but 0 hours'))
+    expect(zh.length).toBeGreaterThan(0)
+    expect(res.reviewed.some(e => zh[0].rowIds!.includes(e.row.id))).toBe(true)
+    // entering hours restores the day
+    const id = zh[0].rowIds![0]
+    const fixed = calculateQuarter(det, [], { ...DEFAULT_SETTINGS, rowEdits: { [id]: { hours: 7, note: 'hours from timesheet' } } })
+    expect(fixed.rowsUsed).toBe(res.rowsUsed + 1)
+  })
+})
+
 describe('policy & helpers', () => {
   it('removals can only exclude and shrink the pool', () => {
     const res = calculateQuarter(corrected, wbAudits, { ...base, removals: { '00844': { note: 'left the company 3/15' } } }, { quarterLabel: '1Q 2026' })

@@ -123,7 +123,7 @@ export function aggregateProjects(kept: KeptRow[]): CruiserProjectAgg[] {
     let a = map.get(key)
     if (!a) {
       a = { empId: r.empId, employee: r.employee, center: r.center, project: r.project, projectDescription: r.projectDescription,
-        factor: r.factor, plots: 0, originalPlots: 0, hours: 0, acres: 0, days: 0,
+        factor: r.factor, inStandard: true, plots: 0, originalPlots: 0, hours: 0, acres: 0, days: 0,
         acresPerPlot: 0, plotsPerHr: 0, plotsPerDay: 0, expPlotsPerHr: 0, expPlotsPerDay: 0, hrRatio: 0, dayRatio: 0 }
       map.set(key, a)
     }
@@ -157,6 +157,19 @@ export function calculateQuarter(rows: TimeRow[], audits: AuditRow[], s: Quarter
   if (review.removed.length) byReason['Removed in review'] = review.removed.length
   const projects = aggregateProjects(kept)
 
+  // --- Does the time report belong to this quarter? ---
+  let periodMismatch: QuarterResult['periodMismatch'] = null
+  const qlab = opts.quarterLabel ? parseQuarterLabel(opts.quarterLabel) : null
+  if (qlab && rows.length) {
+    const months = [...new Set(rows.map(r => r.date.slice(0, 7)).filter(m => /^\d{4}-\d{2}$/.test(m)))].sort()
+    const inQ = (m: string) => { const [y, mo] = m.split('-').map(Number); return y === qlab.year && Math.ceil(mo / 3) === qlab.q }
+    const outside = rows.filter(r => !inQ(r.date.slice(0, 7))).length / rows.length
+    if (outside > 0.5) {
+      periodMismatch = { quarter: opts.quarterLabel!, reportMonths: months, shareOutside: outside }
+      flags.push({ kind: 'data', severity: 'warn', message: `The time report's dates (${months[0]} to ${months[months.length - 1]}) are not in ${opts.quarterLabel}. Upload the right quarter's report or rename this quarter.` })
+    }
+  }
+
   // --- Project summaries & multiplier table reconciliation ---
   const match = opts.multiplierTable ? matchMultipliers(rows, opts.multiplierTable) : null
   const psum = new Map<string, ProjectSummary>()
@@ -173,9 +186,68 @@ export function calculateQuarter(rows: TimeRow[], audits: AuditRow[], s: Quarter
   if (!opts.multiplierTable || !opts.multiplierTable.length) flags.push({ kind: 'project', severity: 'warn', message: 'No SP/MP report loaded — every project is at multiplier 1.' })
   for (const e of projectSummaries) if (e.factor !== 1 && e.factor !== (match?.byProject[e.project]?.factor ?? 1)) flags.push({ kind: 'project', severity: 'info', project: e.project, message: `${e.description}: multiplier ${e.factor} differs from the table.` })
 
+  // --- Per-cruiser production grade, SP share ---
+  const byCruiser = new Map<string, CruiserResult>()
+  const sums = new Map<string, { hx: number; dx: number }>()
+  for (const p of projects) {
+    let c = byCruiser.get(p.empId)
+    if (!c) {
+      c = { empId: p.empId, employee: p.employee, center: p.center, hours: 0, days: 0, plots: 0, originalPlots: 0, acres: 0,
+        hourGrade: 0, dayGrade: 0, productionGrade: 0, audits: [], priorAudits: [], usedPriorAudits: false, qualityGrade: null,
+        eligible: false, eligibilityReasons: [], removed: false, removalNote: '',
+        qualityScale: 0, qualityPerPlot: 0, qualityIncentive: 0, productionScale: 0, productionPerPlot: 0, productionIncentive: 0, totalPerPlot: 0, totalIncentive: 0 }
+      byCruiser.set(p.empId, c); sums.set(p.empId, { hx: 0, dx: 0 })
+    }
+    c.hours += p.hours; c.days += p.days; c.plots += p.plots; c.originalPlots += p.originalPlots; c.acres += p.acres
+  }
+  // --- Audits: pick this quarter's approved audits; keep prior ones available as fallback ---
+  const ql = opts.quarterLabel ? parseQuarterLabel(opts.quarterLabel) : null
+  const inQuarter = (a: AuditRow) => !ql || a.year == null || a.qtr == null || (a.year === ql.year && a.qtr === ql.q)
+  const before = (a: AuditRow) => !!ql && a.year != null && a.qtr != null && (a.year * 4 + a.qtr) < (ql.year * 4 + ql.q)
+  const quarterAudits = audits.filter(inQuarter)
+  const auditsByCruiser = new Map<string, AuditRow[]>()
+  const priorByCruiser = new Map<string, AuditRow[]>()
+  for (const a of audits) {
+    if (inQuarter(a)) { const l = auditsByCruiser.get(a.cruiserId) ?? []; l.push(a); auditsByCruiser.set(a.cruiserId, l) }
+    else if (before(a) && isApproved(a)) { const l = priorByCruiser.get(a.cruiserId) ?? []; l.push(a); priorByCruiser.set(a.cruiserId, l) }
+  }
+  for (const c of byCruiser.values()) {
+    const list = auditsByCruiser.get(c.empId) ?? []
+    const approved = list.filter(isApproved)
+    for (const a of list.filter(a => !isApproved(a))) flags.push({ kind: 'audit', severity: 'warn', empId: c.empId, message: `${c.employee}: audit #${a.auditId} (${a.auditDate}) is "${a.status || 'not approved'}"${a.grade == null ? ' with no grade' : ''} and is not counted yet.` })
+    // Most recent prior quarter's approved audits
+    const prior = (priorByCruiser.get(c.empId) ?? []).sort((x, y) => (y.year! * 4 + y.qtr!) - (x.year! * 4 + x.qtr!))
+    const latestKey = prior.length ? prior[0].year! * 4 + prior[0].qtr! : null
+    c.priorAudits = latestKey == null ? [] : prior.filter(a => a.year! * 4 + a.qtr! === latestKey)
+    if (approved.length) c.audits = approved
+    else if (s.priorAudits[c.empId] && c.priorAudits.length) { c.audits = c.priorAudits; c.usedPriorAudits = true }
+    const grades = c.audits.map(a => a.grade as number)
+    c.qualityGrade = grades.length ? mean(grades) : null
+    if (c.usedPriorAudits) flags.push({ kind: 'audit', severity: 'info', empId: c.empId, message: `${c.employee}: no approved audit this quarter; using ${c.audits[0].qtr}Q ${c.audits[0].year} audits (${grades.join(', ')}) — ${s.priorAudits[c.empId].note || 'no reason given'}.` })
+  }
+  for (const [id, list] of auditsByCruiser) if (!byCruiser.has(id)) flags.push({ kind: 'audit', severity: 'info', empId: id, message: `${list[0].cruiserName} (${id}) has ${list.length} audit(s) this quarter but no counted cruising. Ignored.` })
+
+  // --- Eligibility (policy; removals can only exclude) ---
+  for (const c of byCruiser.values()) {
+    const reasons: string[] = []
+    if (c.hours < policy.minHours) reasons.push(`${c.hours.toFixed(1)} hrs, ${policy.minHours} required`)
+    if (c.qualityGrade == null) reasons.push('no approved audit')
+    else if (c.qualityGrade < policy.hurdleGrade) reasons.push(`quality ${c.qualityGrade.toFixed(1)}, ${policy.hurdleGrade} required`)
+    const rm = s.removals[c.empId]
+    if (rm) { c.removed = true; c.removalNote = rm.note; reasons.push(`removed: ${rm.note || 'no reason given'}`) }
+    c.eligibilityReasons = reasons
+    c.eligible = reasons.length === 0
+    if (c.eligible && c.audits.length === 1) flags.push({ kind: 'audit', severity: 'info', empId: c.empId, message: `${c.employee} has only one audit this quarter (grade ${c.audits[0].grade}).` })
+    if (c.hours >= policy.minHours && c.qualityGrade == null && !rm)
+      flags.push({ kind: 'audit', severity: 'warn', empId: c.empId, message: `${c.employee} has ${c.hours.toFixed(1)} hours and ${c.plots.toFixed(0)} plots but no approved audit this quarter${c.priorAudits.length ? ` — prior audits available (${c.priorAudits[0].qtr}Q ${c.priorAudits[0].year}: ${c.priorAudits.map(a => a.grade).join(', ')})` : ''}.` })
+    if (!c.eligible && !rm && c.hours >= policy.minHours - 2 && c.hours < policy.minHours)
+      flags.push({ kind: 'eligibility', severity: 'info', empId: c.empId, message: `${c.employee} is just under the hour minimum (${c.hours.toFixed(2)} of ${policy.minHours}). Policy excludes them.` })
+  }
+
   // --- Standard (regression of productivity on acres/plot) ---
   let regHr: Regression, regDay: Regression
-  const fitRows = projects.filter(p => p.plots > 0 && p.hours > 0)
+  for (const p of projects) p.inStandard = byCruiser.get(p.empId)?.eligible ?? false
+  const fitRows = projects.filter(p => p.inStandard && p.plots > 0 && p.hours > 0)
   const xs = fitRows.map(p => p.acresPerPlot)
   regHr = linearFit(xs, fitRows.map(p => p.plotsPerHr))
   regDay = linearFit(xs, fitRows.map(p => p.plotsPerDay))
@@ -188,8 +260,16 @@ export function calculateQuarter(rows: TimeRow[], audits: AuditRow[], s: Quarter
     p.expPlotsPerDay = regDay.slope * p.acresPerPlot + regDay.intercept
     p.hrRatio = p.expPlotsPerHr > 0 ? p.plotsPerHr / p.expPlotsPerHr : 0
     p.dayRatio = p.expPlotsPerDay > 0 ? p.plotsPerDay / p.expPlotsPerDay : 0
-    if (p.expPlotsPerHr <= 0 || p.expPlotsPerDay <= 0) flags.push({ kind: 'data', severity: 'warn', empId: p.empId, project: p.project,
+    if (p.inStandard && (p.expPlotsPerHr <= 0 || p.expPlotsPerDay <= 0)) flags.push({ kind: 'data', severity: 'warn', empId: p.empId, project: p.project,
       message: `${p.employee} on ${p.projectDescription || p.project}: acres/plot of ${p.acresPerPlot.toFixed(1)} is beyond the standard's range; graded as 0 for this project.` })
+  }
+
+  for (const p of projects) { const sm = sums.get(p.empId)!; sm.hx += p.hrRatio * p.hours; sm.dx += p.dayRatio * p.days }
+  for (const c of byCruiser.values()) {
+    const sm = sums.get(c.empId)!
+    c.hourGrade = c.hours ? sm.hx / c.hours : 0
+    c.dayGrade = c.days ? sm.dx / c.days : 0
+    c.productionGrade = (s.dayWeight * c.dayGrade + c.hourGrade) / (s.dayWeight + 1)
   }
 
   // --- Data checks (row-level where possible, so the reviewer can fix the entry) ---
@@ -239,72 +319,6 @@ export function calculateQuarter(rows: TimeRow[], audits: AuditRow[], s: Quarter
     else seen.set(k, r.id)
   }
 
-  // --- Per-cruiser production grade, SP share ---
-  const byCruiser = new Map<string, CruiserResult>()
-  const sums = new Map<string, { hx: number; dx: number }>()
-  for (const p of projects) {
-    let c = byCruiser.get(p.empId)
-    if (!c) {
-      c = { empId: p.empId, employee: p.employee, center: p.center, hours: 0, days: 0, plots: 0, originalPlots: 0, acres: 0,
-        hourGrade: 0, dayGrade: 0, productionGrade: 0, audits: [], priorAudits: [], usedPriorAudits: false, qualityGrade: null,
-        eligible: false, eligibilityReasons: [], removed: false, removalNote: '',
-        qualityScale: 0, qualityPerPlot: 0, qualityIncentive: 0, productionScale: 0, productionPerPlot: 0, productionIncentive: 0, totalPerPlot: 0, totalIncentive: 0 }
-      byCruiser.set(p.empId, c); sums.set(p.empId, { hx: 0, dx: 0 })
-    }
-    c.hours += p.hours; c.days += p.days; c.plots += p.plots; c.originalPlots += p.originalPlots; c.acres += p.acres
-    const sm = sums.get(p.empId)!; sm.hx += p.hrRatio * p.hours; sm.dx += p.dayRatio * p.days
-  }
-  for (const c of byCruiser.values()) {
-    const sm = sums.get(c.empId)!
-    c.hourGrade = c.hours ? sm.hx / c.hours : 0
-    c.dayGrade = c.days ? sm.dx / c.days : 0
-    c.productionGrade = (s.dayWeight * c.dayGrade + c.hourGrade) / (s.dayWeight + 1)
-  }
-
-  // --- Audits: pick this quarter's approved audits; keep prior ones available as fallback ---
-  const ql = opts.quarterLabel ? parseQuarterLabel(opts.quarterLabel) : null
-  const inQuarter = (a: AuditRow) => !ql || a.year == null || a.qtr == null || (a.year === ql.year && a.qtr === ql.q)
-  const before = (a: AuditRow) => !!ql && a.year != null && a.qtr != null && (a.year * 4 + a.qtr) < (ql.year * 4 + ql.q)
-  const quarterAudits = audits.filter(inQuarter)
-  const auditsByCruiser = new Map<string, AuditRow[]>()
-  const priorByCruiser = new Map<string, AuditRow[]>()
-  for (const a of audits) {
-    if (inQuarter(a)) { const l = auditsByCruiser.get(a.cruiserId) ?? []; l.push(a); auditsByCruiser.set(a.cruiserId, l) }
-    else if (before(a) && isApproved(a)) { const l = priorByCruiser.get(a.cruiserId) ?? []; l.push(a); priorByCruiser.set(a.cruiserId, l) }
-  }
-  for (const c of byCruiser.values()) {
-    const list = auditsByCruiser.get(c.empId) ?? []
-    const approved = list.filter(isApproved)
-    for (const a of list.filter(a => !isApproved(a))) flags.push({ kind: 'audit', severity: 'warn', empId: c.empId, message: `${c.employee}: audit #${a.auditId} (${a.auditDate}) is "${a.status || 'not approved'}"${a.grade == null ? ' with no grade' : ''} and is not counted yet.` })
-    // Most recent prior quarter's approved audits
-    const prior = (priorByCruiser.get(c.empId) ?? []).sort((x, y) => (y.year! * 4 + y.qtr!) - (x.year! * 4 + x.qtr!))
-    const latestKey = prior.length ? prior[0].year! * 4 + prior[0].qtr! : null
-    c.priorAudits = latestKey == null ? [] : prior.filter(a => a.year! * 4 + a.qtr! === latestKey)
-    if (approved.length) c.audits = approved
-    else if (s.priorAudits[c.empId] && c.priorAudits.length) { c.audits = c.priorAudits; c.usedPriorAudits = true }
-    const grades = c.audits.map(a => a.grade as number)
-    c.qualityGrade = grades.length ? mean(grades) : null
-    if (c.usedPriorAudits) flags.push({ kind: 'audit', severity: 'info', empId: c.empId, message: `${c.employee}: no approved audit this quarter; using ${c.audits[0].qtr}Q ${c.audits[0].year} audits (${grades.join(', ')}) — ${s.priorAudits[c.empId].note || 'no reason given'}.` })
-  }
-  for (const [id, list] of auditsByCruiser) if (!byCruiser.has(id)) flags.push({ kind: 'audit', severity: 'info', empId: id, message: `${list[0].cruiserName} (${id}) has ${list.length} audit(s) this quarter but no counted cruising. Ignored.` })
-
-  // --- Eligibility (policy; removals can only exclude) ---
-  for (const c of byCruiser.values()) {
-    const reasons: string[] = []
-    if (c.hours < policy.minHours) reasons.push(`${c.hours.toFixed(1)} hrs, ${policy.minHours} required`)
-    if (c.qualityGrade == null) reasons.push('no approved audit')
-    else if (c.qualityGrade < policy.hurdleGrade) reasons.push(`quality ${c.qualityGrade.toFixed(1)}, ${policy.hurdleGrade} required`)
-    const rm = s.removals[c.empId]
-    if (rm) { c.removed = true; c.removalNote = rm.note; reasons.push(`removed: ${rm.note || 'no reason given'}`) }
-    c.eligibilityReasons = reasons
-    c.eligible = reasons.length === 0
-    if (c.eligible && c.audits.length === 1) flags.push({ kind: 'audit', severity: 'info', empId: c.empId, message: `${c.employee} has only one audit this quarter (grade ${c.audits[0].grade}).` })
-    if (c.hours >= policy.minHours && c.qualityGrade == null && !rm)
-      flags.push({ kind: 'audit', severity: 'warn', empId: c.empId, message: `${c.employee} has ${c.hours.toFixed(1)} hours and ${c.plots.toFixed(0)} plots but no approved audit this quarter${c.priorAudits.length ? ` — prior audits available (${c.priorAudits[0].qtr}Q ${c.priorAudits[0].year}: ${c.priorAudits.map(a => a.grade).join(', ')})` : ''}.` })
-    if (!c.eligible && !rm && c.hours >= policy.minHours - 2 && c.hours < policy.minHours)
-      flags.push({ kind: 'eligibility', severity: 'info', empId: c.empId, message: `${c.employee} is just under the hour minimum (${c.hours.toFixed(2)} of ${policy.minHours}). Policy excludes them.` })
-  }
-
   const eligible = [...byCruiser.values()].filter(c => c.eligible)
   const eligibleCount = eligible.length
   const totalPool = poolTotal(s, eligibleCount)
@@ -332,6 +346,12 @@ export function calculateQuarter(rows: TimeRow[], audits: AuditRow[], s: Quarter
     c.totalPerPlot = c.qualityPerPlot + c.productionPerPlot; c.totalIncentive = c.qualityIncentive + c.productionIncentive
   }
 
+  // Policy-removed days that still have plots: usually hours or acres were missed on entry — fixable in review
+  for (const r of removed) {
+    if (r.reason === 'No hours recorded' && r.plots > 0) flags.push({ kind: 'data', severity: 'warn', empId: r.empId, project: r.project, rowIds: [r.id], message: `${r.employee} on ${r.date}, ${r.projectDescription || r.project}: ${r.plots} plots but 0 hours — removed by policy. Enter the hours to include the day.` })
+    if (r.reason === 'No acres recorded' && r.plots > 0) flags.push({ kind: 'data', severity: 'warn', empId: r.empId, project: r.project, rowIds: [r.id], message: `${r.employee} on ${r.date}, ${r.projectDescription || r.project}: ${r.plots} plots but 0 acres — removed by policy. Enter the acres to include the day.` })
+  }
+
   // --- Rows for the Data review table: flagged + edited + reviewer-removed ---
   const reviewedMap = review.reviewed
   const rowById = new Map(review.rows.map(r => [r.id, r]))
@@ -348,6 +368,6 @@ export function calculateQuarter(rows: TimeRow[], audits: AuditRow[], s: Quarter
   const reviewed = [...reviewedMap.values()].sort((a, b) => a.row.employee.localeCompare(b.row.employee) || a.row.date.localeCompare(b.row.date))
 
   const cruisers = [...byCruiser.values()].sort((a, b) => Number(b.eligible) - Number(a.eligible) || a.employee.localeCompare(b.employee))
-  return { rowsUsed: kept.length, reviewed, rowsAfterReview: review.rows, removedRows: removed, removedByReason: byReason, projects, projectSummaries, regressionHr: regHr, regressionDay: regDay,
+  return { rowsUsed: kept.length, reviewed, rowsAfterReview: review.rows, periodMismatch, removedRows: removed, removedByReason: byReason, projects, projectSummaries, regressionHr: regHr, regressionDay: regDay,
     cruisers, eligibleCount, totalPool, qualityPool, productionPool, qualityRate, productionRate, qualityScaleUnit, productionScaleUnit, flags, quarterAudits }
 }
