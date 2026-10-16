@@ -1,0 +1,16 @@
+import { chromium } from 'playwright'
+const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' })
+const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+const errors = []
+page.on('pageerror', e => errors.push(e.message)); page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
+await page.goto('file:///home/claude/Cruiser_Incentive.html')
+await page.click('text=Open the 1Q 2026 example')
+await page.waitForSelector('text=Needs your attention')
+await page.click('nav.steps >> text=Results')
+await page.waitForSelector('text=Incentive summary')
+const total = await page.locator('tr.total td').last().innerText()
+const [dl] = await Promise.all([page.waitForEvent('download'), page.click('text=Download F&W workbook')])
+console.log('TOTAL', total, 'DOWNLOAD', dl.suggestedFilename())
+await page.reload(); await page.waitForSelector('text=Saved quarters'); console.log('PERSISTED after reload')
+console.log('ERRORS', errors)
+await browser.close()
