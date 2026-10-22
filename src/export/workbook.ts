@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs/dist/exceljs.min.js'
 import type { QuarterResult, QuarterSettings } from '../engine/types'
-import { POLICY_TEXT } from '../engine/policy'
+import { MANUAL, POLICY_TEXT } from '../engine/policy'
 import type { Quarter } from '../storage/repository'
 import { LOGO_PNG_BASE64 } from './logo'
 
@@ -92,7 +92,7 @@ const r4 = (n: number) => Math.round(n * 10000) / 10000
 
 export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook {
   const wb = new ExcelJS.Workbook()
-  wb.creator = 'F&W Cruiser Incentive'
+  wb.creator = 'SilvaIncentive — F&W Forestry Services'
   wb.created = new Date()
   const el = res.cruisers.filter(c => c.eligible).sort((a, b) => a.center.localeCompare(b.center) || a.employee.localeCompare(b.employee))
   const sum = (f: (c: typeof el[number]) => number) => el.reduce((s, c) => s + f(c), 0)
@@ -102,9 +102,14 @@ export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook 
     `Production standard: plots/hr = ${r4(res.regressionHr.slope)} × acres/plot + ${r4(res.regressionHr.intercept)} (R² ${r4(res.regressionHr.r2)}); plots/day = ${r4(res.regressionDay.slope)} × acres/plot + ${r4(res.regressionDay.intercept)} (R² ${r4(res.regressionDay.r2)}); fit on ${res.regressionHr.n} cruiser-project combinations${s.mode === 'legacy' ? ' (coefficients entered by hand)' : ''}.`,
     `Production grade = (${s.dayWeight} × day grade + hour grade) ÷ ${s.dayWeight + 1}, each weighted by hours and days on every project. Quality grade = average audit grade.`,
     `Pool = ${res.eligibleCount} eligible × ${s.pool.share} ÷ ${s.pool.divisor} × $${s.pool.base.toLocaleString()} × ${s.pool.multiplier} = $${r2(res.totalPool).toLocaleString()}${s.pool.overrideTotal != null ? ' (overridden)' : ''}; ${Math.round(s.qualityShare * 100)}% quality / ${Math.round((1 - s.qualityShare) * 100)}% production.`,
+    'Amounts are rounded to whole cents so the column sums exactly to the pool; each differs from the exact value by less than a cent.',
     `$/plot = (1 + (grade − lowest eligible grade) ÷ ${r2(res.qualityScaleUnit)} points) × $${r4(res.qualityRate)} for quality; (1 + (grade − lowest) ÷ ${r4(res.productionScaleUnit)}) × $${r4(res.productionRate)} for production. Incentive = plots × $/plot.`,
     ...POLICY_TEXT.map(t => `Policy: ${t}`),
   ]
+  const exceptions = res.cruisers.filter(c => c.exception)
+  const bare = (t: string) => t.replace(/^(against the Cruiser Manual|within the manual): /, '')
+  const exceptionNotes = exceptions.map(c => `EXCEPTION — ${c.employee} (${c.empId}) is included ${c.exception!.withinManual ? 'under the leave-of-absence proration of' : 'AGAINST'} the F&W Cruiser Manual: ${bare(c.exception!.summary)}. Approved by ${c.exception!.approvedBy}; reason: ${c.exception!.note}. Acknowledged ${c.exception!.acknowledgedAt.slice(0, 10)}.`)
+  if (exceptions.length) how.unshift(...exceptionNotes)
 
   // --- Summary ---
   brandSheet(wb, 'Summary', q, 'Incentive by Cruiser', [
@@ -122,12 +127,12 @@ export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook 
     { header: 'Total $/Plot', key: 'tpp', width: 9, fmt: NUM3 },
     { header: 'Total Incentive', key: 'ti', width: 13, fmt: CUR },
   ], el.map(c => ({
-    center: c.center, empId: c.empId, name: c.employee, hours: r2(c.hours), plots: Math.round(c.plots),
-    qg: r2(c.qualityGrade ?? 0), qpp: r4(c.qualityPerPlot), qi: r2(c.qualityIncentive),
-    pg: r4(c.productionGrade), ppp: r4(c.productionPerPlot), pi: r2(c.productionIncentive),
-    tpp: r4(c.totalPerPlot), ti: r2(c.totalIncentive),
+    center: c.center, empId: c.empId, name: c.exception ? `${c.employee} *` : c.employee, hours: r2(c.hours), plots: Math.round(c.plots),
+    qg: r2(c.qualityGrade ?? 0), qpp: r4(c.qualityPerPlot), qi: c.qualityPaid,
+    pg: r4(c.productionGrade), ppp: r4(c.productionPerPlot), pi: c.productionPaid,
+    tpp: r4(c.totalPerPlot), ti: c.totalPaid,
   })), {
-    total: { name: `Total — ${el.length} cruisers`, hours: r2(sum(c => c.hours)), plots: Math.round(sum(c => c.plots)), qi: r2(sum(c => c.qualityIncentive)), pi: r2(sum(c => c.productionIncentive)), ti: r2(sum(c => c.totalIncentive)) },
+    total: { name: `Total — ${el.length} cruisers`, hours: r2(sum(c => c.hours)), plots: Math.round(sum(c => c.plots)), qi: r2(sum(c => c.qualityPaid)), pi: r2(sum(c => c.productionPaid)), ti: r2(sum(c => c.totalPaid)) },
     notes: how, landscape: true,
   })
 
@@ -150,10 +155,11 @@ export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook 
     { header: 'Production Grade', key: 'pg', width: 10, fmt: NUM3 },
     { header: 'Total Incentive', key: 'ti', width: 12, fmt: CUR },
   ], res.cruisers.map(c => ({
-    center: c.center, empId: c.empId, name: c.employee, el: c.eligible ? 'Yes' : 'No', reason: c.eligibilityReasons.join('; '),
+    center: c.center, empId: c.empId, name: c.employee, el: c.exception ? (c.exception.withinManual ? 'Yes — LOA prorated' : 'Yes — EXCEPTION') : c.eligible ? 'Yes' : 'No',
+    reason: c.exception ? `${c.exception.summary}; approved by ${c.exception.approvedBy}: ${c.exception.note}` : c.eligibilityReasons.join('; '),
     hours: r2(c.hours), days: c.days, op: Math.round(c.originalPlots), ap: r2(c.plots), acres: r2(c.acres),
     ag: c.audits.map(a => a.grade).join(', '), qg: c.qualityGrade == null ? null : r2(c.qualityGrade),
-    hg: r4(c.hourGrade), dg: r4(c.dayGrade), pg: r4(c.productionGrade), ti: r2(c.totalIncentive),
+    hg: r4(c.hourGrade), dg: r4(c.dayGrade), pg: r4(c.productionGrade), ti: c.totalPaid,
   })), { landscape: true })
 
   // --- Projects ---
@@ -254,10 +260,14 @@ export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook 
     { k: 'Time entries removed in review', v: res.reviewed.filter(e => e.removed).length },
     ...Object.entries(s.removals).map(([id, r]) => ({ k: `Removed cruiser — ${id}`, v: r.note })),
     ...res.cruisers.filter(c => c.usedPriorAudits).map(c => ({ k: `Prior-quarter audits — ${c.employee}`, v: `${c.audits[0].qtr}Q ${c.audits[0].year}: ${c.audits.map(a => a.grade).join(', ')} — ${s.priorAudits[c.empId]?.note ?? ''}` })),
+    ...exceptions.map(c => ({ k: `Exception — ${c.employee}`, v: `${c.exception!.withinManual ? 'Within manual (LOA)' : 'AGAINST MANUAL'}: ${bare(c.exception!.summary)}; approved by ${c.exception!.approvedBy}: ${c.exception!.note}` })),
   ]
   brandSheet(wb, 'Settings', q, 'Settings & Policy', [
     { header: 'Setting', key: 'k', width: 34 }, { header: 'Value', key: 'v', width: 60 },
-  ], settings, { notes: POLICY_TEXT.map(t => `Policy: ${t}`) })
+  ], settings, { notes: [
+    ...POLICY_TEXT.map(t => `Policy: ${t}`),
+    ...(exceptions.length ? [`${MANUAL.title}:`, `${MANUAL.hours.ref}. ${MANUAL.hours.text}`, `${MANUAL.loa.ref}. ${MANUAL.loa.text}`, `${MANUAL.quality.ref}. ${MANUAL.quality.text}`] : []),
+  ] })
 
   return wb
 }

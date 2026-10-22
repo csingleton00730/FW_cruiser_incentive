@@ -90,6 +90,8 @@ export interface QuarterSettings {
   rowRemovals: Record<string, { note: string; why?: string[] }>
   /** Cruisers for whom the most recent prior-quarter approved audits are used because none exist this quarter. */
   priorAudits: Record<string, { note: string }>
+  /** Cruisers included although the hours or quality rule excludes them. Each one is a recorded, acknowledged exception. */
+  exceptions: Record<string, Exception>
   mode: 'fixed' | 'legacy'
   legacyCoefficients?: { hr: [number, number]; day: [number, number] }
 }
@@ -107,7 +109,30 @@ export const DEFAULT_SETTINGS: QuarterSettings = {
   rowEdits: {},
   rowRemovals: {},
   priorAudits: {},
+  exceptions: {},
   mode: 'fixed',
+}
+
+/** Which eligibility rules an exception can waive. "No approved audit" cannot be waived — use prior audits or a hand-entered grade. */
+export type WaivableRule = 'hours' | 'quality'
+
+/**
+ * A cruiser included despite failing a rule. Two bases:
+ *  - 'loa': leave of absence — the Cruiser Manual (item 11) prorates the 40-hour minimum; if the cruiser meets the
+ *    prorated minimum this is within the manual, otherwise it still needs the acknowledgment.
+ *  - 'override': the reviewer is knowingly going against the Cruiser Manual.
+ */
+export interface Exception {
+  basis: 'loa' | 'override'
+  /** Weeks of leave in the quarter (basis 'loa'). */
+  loaWeeks?: number
+  /** Why — required. */
+  note: string
+  /** Who approved the exception — required. */
+  approvedBy: string
+  /** The reviewer ticked the acknowledgment that this departs from the Cruiser Manual. */
+  acknowledged: boolean
+  acknowledgedAt: string
 }
 
 export interface CruiserProjectAgg {
@@ -169,6 +194,10 @@ export interface CruiserResult {
   qualityGrade: number | null
   eligible: boolean
   eligibilityReasons: string[]
+  /** Rules this cruiser fails on the numbers (set even when an exception makes them eligible). */
+  failedRules: WaivableRule[]
+  /** Set when the cruiser is eligible only because of a recorded exception. */
+  exception?: Exception & { withinManual: boolean; summary: string }
   removed: boolean
   removalNote: string
   qualityScale: number
@@ -179,12 +208,16 @@ export interface CruiserResult {
   productionIncentive: number
   totalPerPlot: number
   totalIncentive: number
+  /** The amounts actually paid: rounded to cents so that the column sums exactly to the pool. */
+  qualityPaid: number
+  productionPaid: number
+  totalPaid: number
 }
 
 export interface RemovedRow extends TimeRow { reason: string }
 
 export interface DataFlag {
-  kind: 'audit' | 'data' | 'project' | 'eligibility'
+  kind: 'audit' | 'data' | 'project' | 'eligibility' | 'exception'
   severity: 'warn' | 'info'
   message: string
   empId?: string
@@ -218,5 +251,7 @@ export interface QuarterResult {
   /** Every row after review edits (for the row finder). */
   rowsAfterReview: TimeRow[]
   /** When the time report's dates don't belong to the labelled quarter. */
+  /** The quarter label could not be read (e.g. "First Quarter 2026"); no audits are counted until it is fixed. */
+  labelUnparsed: boolean
   periodMismatch: { quarter: string; reportMonths: string[]; shareOutside: number } | null
 }

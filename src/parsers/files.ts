@@ -63,7 +63,13 @@ function toIsoDate(d: Date): string {
 function dateStr(v: Cell): string {
   if (v instanceof Date) return toIsoDate(v)
   if (typeof v === 'number') { const d = XLSX.SSF.parse_date_code(v); return d ? `${d.y}-${String(d.m).padStart(2, '0')}-${String(d.d).padStart(2, '0')}` : '' }
-  if (typeof v === 'string') { const d = new Date(v); return isNaN(d.getTime()) ? v : toIsoDate(d) }
+  if (typeof v === 'string') {
+    const t = v.trim()
+    const iso = t.match(/^(\d{4})-(\d{2})-(\d{2})/); if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}` // already ISO: don't round-trip through UTC midnight
+    const us = t.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/) // m/d/yyyy as the time system writes it
+    if (us) { const y = us[3].length === 2 ? 2000 + Number(us[3]) : Number(us[3]); return `${y}-${us[1].padStart(2, '0')}-${us[2].padStart(2, '0')}` }
+    const d = new Date(t); return isNaN(d.getTime()) ? v : toIsoDate(d)
+  }
   return ''
 }
 /** Keep leading zeros on ids like 00844 / 070 that Excel may have turned into numbers. */

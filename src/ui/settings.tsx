@@ -22,8 +22,8 @@ export function SettingsView({ defaults, onSaveDefaults }: {
   return (
     <div className="stack">
       <div className="card locked">
-        <div className="row between"><h2>Policy</h2><span className="pill no">Locked</span></div>
-        <p className="muted small">These rules are fixed in the application and apply to every quarter. They cannot be changed from this screen.</p>
+        <div className="row between"><h2>Policy</h2><span className="pill no">Fixed</span></div>
+        <p className="muted small">These rules come from the F&amp;W Cruiser Manual and apply to every quarter; the numbers cannot be changed here. On the Review step a cruiser the hours or quality rule excludes can still be included — but only as a recorded exception with a reason, an approver, and (unless a leave of absence prorates the minimum) an acknowledgment that it departs from the manual. Exceptions are printed in the workbook.</p>
         <ul className="policy">{POLICY_TEXT.map((t, i) => <li key={i}>{t}</li>)}</ul>
       </div>
 

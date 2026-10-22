@@ -5,7 +5,7 @@ const js = html.match(/src="\.\/(assets\/[^"]+\.js)"/)[1]
 const css = html.match(/href="\.\/(assets\/[^"]+\.css)"/)[1]
 rmSync('artifact', { recursive: true, force: true }); mkdirSync('artifact/assets', { recursive: true })
 writeFileSync(`artifact/${js}`, readFileSync(`dist/${js}`, 'utf8').replaceAll('\uFFFD', '\\uFFFD')); cpSync('dist/favicon.svg', 'artifact/favicon.svg')
-const page = `<title>Cruiser Incentive</title>
+const page = `<title>SilvaIncentive</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <style>
 ${readFileSync(`dist/${css}`, 'utf8')}

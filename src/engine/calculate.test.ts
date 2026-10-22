@@ -4,8 +4,8 @@ import crystalQ1 from './__fixtures__/crystal-q1-2026.json'
 import casl from './__fixtures__/casl-2025-2026.json'
 import rawQ2 from './__fixtures__/raw-export-q2-2026.json'
 import carbonCalcs from './__fixtures__/carbon-calcs-q2-2026.json'
-import { assignRowIds, calculateQuarter, correctRows, linearFit, matchMultipliers, parseQuarterLabel } from './calculate'
-import { POLICY } from './policy'
+import { allocateCents, assignRowIds, calculateQuarter, correctRows, evaluateException, linearFit, matchMultipliers, parseQuarterLabel } from './calculate'
+import { POLICY, proratedMinHours } from './policy'
 import { DEFAULT_SETTINGS, type AuditRow, type MultiplierRow, type QuarterSettings, type TimeRow } from './types'
 
 type FixRow = Record<string, string | number | null>
@@ -152,6 +152,152 @@ describe('2Q 2026 Raw Export → WC_Hrs_Miss Data Edited', () => {
   })
 })
 
+describe('eligibility exceptions (Cruiser Manual items 8, 11, 13)', () => {
+  const rows = toRows(rawQ2 as FixRow[])
+  const G = '00814' // Gerardo Salinas, 39.75 hrs in 2Q 2026
+  // The CASL fixture is trimmed and has no 2026 audit for him; give him one so only the hours rule fails
+  const audits: AuditRow[] = [...toAudits(casl as FixRow[]), { id: 'g1', auditDate: '2026-05-12', year: 2026, qtr: 2, cruiserName: 'Gerardo Salinas', cruiserId: G, projectId: '', grade: 90.5, auditId: 'g1', status: 'Approved', cruiseType: '' }]
+  const s: QuarterSettings = { ...DEFAULT_SETTINGS }
+  const gerardo = (res: ReturnType<typeof calculateQuarter>) => res.cruisers.find(c => c.empId === G)!
+  const label = { quarterLabel: '2Q 2026' }
+
+  it('prorates the hour minimum per item 11', () => {
+    expect(proratedMinHours(1)).toBeCloseTo(36.67, 2)
+    expect(proratedMinHours(0)).toBe(40)
+    expect(proratedMinHours(12)).toBe(0)
+  })
+  it('is excluded with no exception recorded', () => {
+    const res = calculateQuarter(rows, audits, s, label)
+    const g = gerardo(res)
+    expect(g.hours).toBeCloseTo(39.75, 2)
+    expect(g.eligible).toBe(false); expect(g.failedRules).toEqual(['hours']); expect(g.exception).toBeUndefined()
+  })
+  it('an LOA that brings them within the prorated minimum is within the manual and needs no acknowledgment', () => {
+    const before = calculateQuarter(rows, audits, s, label)
+    const res = calculateQuarter(rows, audits, { ...s, exceptions: { [G]: { basis: 'loa', loaWeeks: 1, note: 'FMLA week of 5/4', approvedBy: 'Center Manager', acknowledged: false, acknowledgedAt: '2026-10-22T00:00:00Z' } } }, label)
+    const g = gerardo(res)
+    expect(g.eligible).toBe(true); expect(g.exception?.withinManual).toBe(true)
+    expect(g.exception?.summary).toContain('within the manual')
+    expect(res.eligibleCount).toBe(before.eligibleCount + 1)
+    expect(res.totalPool).toBeGreaterThan(before.totalPool)
+    expect(g.totalIncentive).toBeGreaterThan(0)
+    // the pool is still fully distributed
+    expect(res.cruisers.reduce((t, c) => t + c.totalIncentive, 0)).toBeCloseTo(res.totalPool, 2)
+  })
+  it('an override needs reason, approver AND the acknowledgment', () => {
+    const base = { basis: 'override' as const, note: 'Manager asked to include', approvedBy: 'J. Doe', acknowledged: true, acknowledgedAt: '2026-10-22T00:00:00Z' }
+    expect(gerardo(calculateQuarter(rows, audits, { ...s, exceptions: { [G]: { ...base, acknowledged: false } } }, label)).eligible).toBe(false)
+    expect(gerardo(calculateQuarter(rows, audits, { ...s, exceptions: { [G]: { ...base, note: '' } } }, label)).eligible).toBe(false)
+    expect(gerardo(calculateQuarter(rows, audits, { ...s, exceptions: { [G]: { ...base, approvedBy: ' ' } } }, label)).eligible).toBe(false)
+    const res = calculateQuarter(rows, audits, { ...s, exceptions: { [G]: base } }, label)
+    const g = gerardo(res)
+    expect(g.eligible).toBe(true); expect(g.exception?.withinManual).toBe(false)
+    expect(g.exception?.summary).toContain('against the Cruiser Manual'); expect(g.exception?.summary).toContain('Item 8')
+    expect(res.flags.some(f => f.kind === 'exception' && f.empId === G && f.message.includes('J. Doe'))).toBe(true)
+  })
+  it('an LOA that still leaves them short is treated as an override', () => {
+    const v = evaluateException(39.75, 85, ['hours'], { basis: 'loa', loaWeeks: 0.01, note: 'x', approvedBy: 'y', acknowledged: false, acknowledgedAt: '' })
+    expect(v.ok).toBe(false); expect(v.withinManual).toBe(false)
+    const v2 = evaluateException(39.75, 85, ['hours'], { basis: 'loa', loaWeeks: 0.01, note: 'x', approvedBy: 'y', acknowledged: true, acknowledgedAt: '' })
+    expect(v2.ok).toBe(true); expect(v2.summary).toContain('still short')
+  })
+  it('cannot waive "no approved audit" or a removal', () => {
+    const noAudit = calculateQuarter(rows, [], { ...s, exceptions: { [G]: { basis: 'override', note: 'x', approvedBy: 'y', acknowledged: true, acknowledgedAt: '' } } }, label)
+    expect(gerardo(noAudit).eligible).toBe(false)
+    const removed = calculateQuarter(rows, audits, { ...s, removals: { [G]: { note: 'left' } }, exceptions: { [G]: { basis: 'override', note: 'x', approvedBy: 'y', acknowledged: true, acknowledgedAt: '' } } }, label)
+    expect(gerardo(removed).eligible).toBe(false)
+  })
+  it('waives a quality grade below 80 only as an override', () => {
+    const v = evaluateException(120, 78.5, ['quality'], { basis: 'override', note: 'x', approvedBy: 'y', acknowledged: true, acknowledgedAt: '' })
+    expect(v.ok).toBe(true); expect(v.summary).toContain('Item 13')
+    const loa = evaluateException(120, 78.5, ['quality'], { basis: 'loa', loaWeeks: 2, note: 'x', approvedBy: 'y', acknowledged: false, acknowledgedAt: '' })
+    expect(loa.ok).toBe(false); expect(loa.withinManual).toBe(false)
+  })
+})
+
+describe('robustness (review findings 2026-10-22)', () => {
+  const rows = toRows(rawQ2 as FixRow[])
+  const audits = toAudits(casl as FixRow[])
+  const day = (over: Partial<TimeRow>): TimeRow => ({ id: 'x', employee: 'Test Cruiser', empId: '00999', center: '046', monthYear: '', date: '2026-05-05', project: 'P1', projectDescription: 'Test Project Inventory', customerId: '', customerName: '', hours: 8, acres: 40, plots: 10, noDays: 1, projType: '', wc: 'F1', ...over })
+
+  it('an unreadable quarter label counts no audits and says so (fails closed)', () => {
+    const good = calculateQuarter(rows, audits, DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    const bad = calculateQuarter(rows, audits, DEFAULT_SETTINGS, { quarterLabel: 'Second Quarter 2026' })
+    expect(bad.labelUnparsed).toBe(true); expect(good.labelUnparsed).toBe(false)
+    expect(bad.quarterAudits.length).toBe(0)
+    expect(bad.eligibleCount).toBe(0)
+    expect(bad.flags.some(f => f.message.includes('not a quarter the app can read'))).toBe(true)
+  })
+  it('removes days dated outside the quarter as policy (manual item 8)', () => {
+    const set = assignRowIds([day({ date: '2026-04-01', hours: 20, plots: 30 }), day({ date: '2026-06-30', hours: 20, plots: 30 }), day({ date: '2026-03-31', hours: 30, plots: 40 }), day({ date: '2026-07-01', hours: 30, plots: 40 })].map(({ id: _i, ...r }) => r))
+    const res = calculateQuarter(set, [], DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    expect(res.removedByReason['Outside the quarter']).toBe(2)
+    expect(res.cruisers[0].hours).toBe(40)
+    expect(res.periodMismatch).toBeNull()
+    // the real 2Q report has nothing outside the quarter
+    expect(calculateQuarter(rows, audits, DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' }).removedByReason['Outside the quarter']).toBeUndefined()
+  })
+  it('keeps negative hours/plots (correction entries) and flags them instead of dropping them', () => {
+    const set = assignRowIds([day({ date: '2026-05-01' }), day({ date: '2026-05-01' }), day({ date: '2026-05-02', hours: -8, plots: -10, acres: -40 })].map(({ id: _i, ...r }) => r))
+    const { kept, byReason } = correctRows(set, DEFAULT_SETTINGS)
+    expect(kept.length).toBe(3); expect(byReason['No hours recorded']).toBeUndefined()
+    const res = calculateQuarter(set, [], DEFAULT_SETTINGS)
+    expect(res.flags.filter(f => f.message.includes('negative value')).length).toBe(1)
+    expect(res.cruisers[0].hours).toBe(8) // the reversal nets out the duplicate
+  })
+  it('multiplier matching: exact beats containment, short names never match, ambiguity is flagged', () => {
+    const rs = assignRowIds([day({ project: 'A', projectDescription: 'Inventory' }), day({ project: 'B', projectDescription: 'Katahdin Carbon Inventory' }), day({ project: 'C', projectDescription: 'Finite Carbon Maine Phase 2' })].map(({ id: _i, ...r }) => r))
+    const table: MultiplierRow[] = [
+      { id: '1', job: 'Katahdin Carbon Inventory', plotsPerHour: null, factor: 5 },
+      { id: '2', job: 'Katahdin Carbon Inventory 2025', plotsPerHour: null, factor: 7 }, // contains B's name but B has an exact match
+      { id: '3', job: 'Finite Carbon Maine', plotsPerHour: null, factor: 10 },
+      { id: '4', job: 'Carbon Maine Phase 2 Finite', plotsPerHour: null, factor: 11 }, // does not contain or fit C
+    ]
+    const m = matchMultipliers(rs, table)
+    expect(m.byProject['A']).toBeUndefined() // "Inventory" is too short to match anything by containment
+    expect(m.byProject['B']).toEqual({ factor: 5, job: 'Katahdin Carbon Inventory' })
+    expect(m.byProject['C'].factor).toBe(10)
+    expect(m.ambiguous['B']).toBeUndefined()
+    expect(m.unmatchedJobs.map(t => t.id).sort()).toEqual(['2', '4'])
+    const m2 = matchMultipliers(rs, [...table, { id: '5', job: 'Finite Carbon Maine Phase 2 Extra Words', plotsPerHour: null, factor: 12 }])
+    expect(m2.ambiguous['C']?.length).toBe(2)
+    const res = calculateQuarter(rs, [], DEFAULT_SETTINGS, { multiplierTable: [...table, { id: '5', job: 'Finite Carbon Maine Phase 2 Extra Words', plotsPerHour: null, factor: 12 }] })
+    expect(res.flags.some(f => f.message.includes('more than one table job'))).toBe(true)
+    // unchanged on the real table
+    const real = matchMultipliers(rows, (carbonCalcs as Array<{ job: string; pph: number | null; factor: number }>).map((t, i) => ({ id: String(i), job: t.job, plotsPerHour: t.pph, factor: t.factor })))
+    expect(Object.keys(real.byProject).length).toBe(3); expect(Object.keys(real.ambiguous).length).toBe(0)
+  })
+  it('audits: blank year/quarter falls back to the date, no date is flagged, duplicates count once, blank status is not approved', () => {
+    const set = assignRowIds([day({ date: '2026-05-01', hours: 50 })].map(({ id: _i, ...r }) => r))
+    const a = (over: Partial<AuditRow>): AuditRow => ({ id: Math.random().toString(), auditDate: '2026-05-10', year: null, qtr: null, cruiserName: 'Test Cruiser', cruiserId: '00999', projectId: '', grade: 90, auditId: 'a1', status: 'Approved', cruiseType: '', ...over })
+    const r1 = calculateQuarter(set, [a({})], DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    expect(r1.cruisers[0].qualityGrade).toBe(90) // date says 2Q
+    const r2 = calculateQuarter(set, [a({ auditDate: '2026-02-10' })], DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    expect(r2.cruisers[0].qualityGrade).toBeNull(); expect(r2.cruisers[0].priorAudits.length).toBe(1) // date says 1Q → prior
+    const r3 = calculateQuarter(set, [a({ auditDate: '' })], DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    expect(r3.cruisers[0].qualityGrade).toBeNull(); expect(r3.flags.some(f => f.message.includes('no year/quarter or date'))).toBe(true)
+    const r4 = calculateQuarter(set, [a({ year: 2026, qtr: 2, grade: 80 }), a({ year: 2026, qtr: 2, grade: 80 })], DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    expect(r4.cruisers[0].audits.length).toBe(1); expect(r4.flags.some(f => f.message.includes('appears twice'))).toBe(true)
+    const r5 = calculateQuarter(set, [a({ year: 2026, qtr: 2, status: '' })], DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    expect(r5.cruisers[0].qualityGrade).toBeNull()
+  })
+  it('a zero step setting cannot produce NaN', () => {
+    const res = calculateQuarter(rows, audits, { ...DEFAULT_SETTINGS, qualityStepPoints: 0 }, { quarterLabel: '2Q 2026' })
+    expect(res.cruisers.every(c => Number.isFinite(c.totalIncentive))).toBe(true)
+    expect(res.cruisers.reduce((t, c) => t + c.totalIncentive, 0)).toBeCloseTo(res.totalPool, 6)
+  })
+  it('paid amounts foot to the pool to the cent', () => {
+    const res = calculateQuarter(rows, audits, DEFAULT_SETTINGS, { quarterLabel: '2Q 2026' })
+    const paid = res.cruisers.reduce((t, c) => t + c.totalPaid, 0)
+    expect(Math.round(paid * 100)).toBe(Math.round(res.totalPool * 100))
+    for (const c of res.cruisers) expect(Math.abs(c.totalPaid - c.totalIncentive)).toBeLessThan(0.011)
+  })
+  it('flags a stale review correction that no longer matches a row', () => {
+    const res = calculateQuarter(rows, audits, { ...DEFAULT_SETTINGS, rowEdits: { '00001|2026-04-01|X|F1|1|1|1': { hours: 2, note: 'old' } } }, { quarterLabel: '2Q 2026' })
+    expect(res.flags.some(f => f.message.includes('no longer matches'))).toBe(true)
+  })
+})
+
 describe('data review', () => {
   const rows = toRows(rawQ2 as FixRow[])
   const ided = rows.map(r => ({ ...r })) // toRows gives index ids; re-id deterministically
@@ -222,7 +368,18 @@ describe('policy & helpers', () => {
   it('parses quarter labels', () => {
     expect(parseQuarterLabel('1Q 2026')).toEqual({ q: 1, year: 2026 })
     expect(parseQuarterLabel('Q3 2025')).toEqual({ q: 3, year: 2025 })
+    expect(parseQuarterLabel('1Q2026')).toEqual({ q: 1, year: 2026 }) // no space must not read the year's "2" as the quarter
+    expect(parseQuarterLabel('4Q2025')).toEqual({ q: 4, year: 2025 })
+    expect(parseQuarterLabel('2026 Q1')).toEqual({ q: 1, year: 2026 })
     expect(parseQuarterLabel('nope')).toBeNull()
+    expect(parseQuarterLabel('First Quarter 2026')).toBeNull()
+  })
+  it('allocates cents that foot exactly', () => {
+    const amounts = [10.005, 10.005, 10.005, 69.985] // exact sum 100.00; naive rounding gives 100.01 or 99.99
+    const paid = allocateCents(amounts, 100)
+    expect(paid.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 10)
+    paid.forEach((p, i) => expect(Math.abs(p - amounts[i])).toBeLessThan(0.01))
+    expect(allocateCents([], 0)).toEqual([])
   })
   it('fits a perfect line', () => {
     const f = linearFit([0, 1, 2, 3], [1, 3, 5, 7])

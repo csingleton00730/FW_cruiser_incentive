@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import { calculateQuarter } from './engine/calculate'
+import { calculateQuarter, parseQuarterLabel } from './engine/calculate'
 import { DEFAULT_SETTINGS, type QuarterSettings } from './engine/types'
 import { newId, repository, type Quarter, type QuarterSummary } from './storage/repository'
 
@@ -57,7 +57,7 @@ export default function App() {
       <header className="topbar">
         <Logo />
         <div>
-          <h1>Cruiser Incentive</h1>
+          <h1>SilvaIncentive</h1>
           <div className="sub">F&amp;W Forestry Services · quarterly cruising incentive</div>
         </div>
         <span className="spacer" />
@@ -87,7 +87,8 @@ function Home({ list, onOpen, onCreate, onDelete, onSample }: {
           <p className="muted">Three steps: upload the Crystal time report, the CASL export and Andy's SP/MP report; review what the rules did; download the F&amp;W workbook. The 40-hour minimum, the 80 audit hurdle, the work-code rules and the Western-division exclusion apply automatically.</p>
           <div className="row" style={{ marginTop: 12 }}>
             <input type="text" value={label} onChange={e => setLabel(e.target.value)} style={{ width: 150 }} placeholder="e.g. 1Q 2026" aria-label="Quarter label" />
-            <button className="primary" onClick={() => label.trim() && onCreate(label.trim())}>New quarter</button>
+            <button className="primary" disabled={!parseQuarterLabel(label)} title={parseQuarterLabel(label) ? '' : 'Name the quarter like 1Q 2026'} onClick={() => parseQuarterLabel(label) && onCreate(label.trim())}>New quarter</button>
+            {!parseQuarterLabel(label) && <span className="small" style={{ color: 'var(--danger)' }}>Name it like "1Q 2026" — the quarter picks the audits and dates.</span>}
             {INCLUDE_SAMPLE && <button onClick={onSample}>Open the 1Q 2026 example</button>}
           </div>
         </div>
@@ -160,6 +161,7 @@ function QuarterView({ initial }: { initial: Quarter }) {
                 onChange={e => update({ label: e.target.value })} onBlur={() => setRenaming(false)} onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setRenaming(false) }} />
             : <h2>{q.label}</h2>}
           <button className="ghost small" title="Rename quarter" onClick={() => setRenaming(r => !r)}>✎</button>
+          {!parseQuarterLabel(q.label) && <span className="pill no">unreadable quarter name</span>}
           <span className={`pill ${q.status === 'final' ? 'ok' : 'warn'}`}>{q.status}</span>
         </div>
         <span className="small muted">{saved ? 'Saved' : 'Saving…'}</span>

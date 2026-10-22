@@ -3,7 +3,7 @@ const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromi
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
 const errors = []
 page.on('pageerror', e => errors.push(e.message)); page.on('console', m => { if (m.type() === 'error') errors.push(m.text()) })
-await page.goto('file:///home/claude/Cruiser_Incentive.html')
+await page.goto('file:///home/claude/SilvaIncentive.html')
 await page.click('text=Open the 1Q 2026 example')
 await page.waitForSelector('text=Needs your attention')
 await page.click('nav.steps >> text=Results')

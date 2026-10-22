@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react'
-import type { AuditRow, QuarterResult, QuarterSettings, RowEdit, TimeRow } from '../engine/types'
-import { POLICY, POLICY_TEXT } from '../engine/policy'
-import { matchMultipliers } from '../engine/calculate'
+import { useEffect, useMemo, useState } from 'react'
+import type { AuditRow, CruiserResult, Exception, QuarterResult, QuarterSettings, RowEdit, TimeRow } from '../engine/types'
+import { MANUAL, POLICY, POLICY_TEXT, proratedMinHours } from '../engine/policy'
+import { evaluateException, matchMultipliers, parseQuarterLabel } from '../engine/calculate'
 import { parseCaslExport, parseMultiplierReport, parseTimeExport } from '../parsers/files'
 import type { Quarter } from '../storage/repository'
 import { newId } from '../storage/repository'
@@ -105,11 +105,18 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
     if (!on) delete next[empId]; else next[empId] = { note }
     updateSettings({ priorAudits: next })
   }
+  const [exceptionFor, setExceptionFor] = useState<CruiserResult | null>(null)
+  const setException = (empId: string, ex: Exception | null) => {
+    const next = { ...(q.settings.exceptions ?? {}) }
+    if (!ex) delete next[empId]; else next[empId] = ex
+    updateSettings({ exceptions: next })
+  }
   const removeAudit = (id: string) => update({ audits: q.audits.filter(a => a.id !== id) })
   const addManual = () => {
     const c = res.cruisers.find(x => x.empId === manual.cruiserId); const g = Number(manual.grade)
     if (!c || !Number.isFinite(g)) return
-    const a: AuditRow = { id: newId(), auditDate: new Date().toISOString().slice(0, 10), year: null, qtr: null, cruiserName: c.employee, cruiserId: c.empId, projectId: '', grade: g, auditId: 'manual', status: 'Approved', cruiseType: '' }
+    const ql = parseQuarterLabel(q.label)
+    const a: AuditRow = { id: newId(), auditDate: new Date().toISOString().slice(0, 10), year: ql?.year ?? null, qtr: ql?.q ?? null, cruiserName: c.employee, cruiserId: c.empId, projectId: '', grade: g, auditId: 'manual', status: 'Approved', cruiseType: '' }
     update({ audits: [...q.audits, a] }); setManual({ cruiserId: '', grade: '' })
   }
 
@@ -123,6 +130,7 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
 
   return (
     <div className="stack">
+      {res.labelUnparsed && <Notice kind="error" title={`"${q.label}" is not a quarter the app can read.`}>Rename the quarter like "1Q 2026" (pencil next to its name at the top). No audits are counted until then.</Notice>}
       {res.periodMismatch && <Notice kind="error" title={`This time report is not ${q.label}.`}>Its dates run {res.periodMismatch.reportMonths[0]} to {res.periodMismatch.reportMonths[res.periodMismatch.reportMonths.length - 1]}. Upload the right quarter's report or rename the quarter.</Notice>}
       <div className="grid cols-4">
         <Stat value={res.rowsUsed.toLocaleString()} label="time entries counted" />
@@ -135,7 +143,7 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
         <div className="card attention">
           <h2>Needs your attention</h2>
           <ul className="todo">
-            {warn.filter(f => !f.rowIds?.length).map((f, i) => <li key={i}><span className="pill warn">Check</span> {f.message}</li>)}
+            {warn.filter(f => !f.rowIds?.length).map((f, i) => <li key={i}><span className={`pill ${f.kind === 'exception' ? 'no' : 'warn'}`}>{f.kind === 'exception' ? 'Exception' : 'Check'}</span> {f.message}</li>)}
             {warn.some(f => f.rowIds?.length) && <li><span className="pill warn">Data</span> {res.reviewed.filter(e => e.flags.length && !e.edit && !e.removed).length} time entries look like they may be mis-entered — see <a href="#data-review">Data review</a> below to fix or remove them.</li>}
           </ul>
         </div>
@@ -197,7 +205,7 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
       {/* Cruisers */}
       <div className="card">
         <h3>Cruisers and eligibility</h3>
-        <p className="muted small">Eligibility follows policy: at least {POLICY.minHours} cruising hours and an average approved audit grade of {POLICY.hurdleGrade} or better for the quarter. A cruiser can be removed with a reason (left the company, data problem); nobody can be added back once a rule excludes them. If a cruiser has the hours but no audit this quarter, you can choose to use their most recent prior audits — that choice is recorded in the workbook.</p>
+        <p className="muted small">Eligibility follows policy: at least {POLICY.minHours} cruising hours and an average approved audit grade of {POLICY.hurdleGrade} or better for the quarter. A cruiser can be removed with a reason (left the company, data problem). A cruiser the hours or quality rule excludes can be included only as a recorded exception — a leave of absence that prorates the minimum (Cruiser Manual item 11), or an acknowledged departure from the manual with a reason and the approver's name. If a cruiser has the hours but no audit this quarter, you can choose to use their most recent prior audits. Every one of these choices is printed in the workbook.</p>
         <div className="scroll">
           <table className="data">
             <thead><tr><th>Cruiser</th><th>Center</th><th className="num">Hours</th><th className="num">Plots</th><th>Audits</th><th className="num">Quality</th><th>Status</th><th>Remove</th></tr></thead>
@@ -220,7 +228,7 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
                       ))}
                       {c.usedPriorAudits && <div className="small muted">from {c.audits[0].qtr}Q {c.audits[0].year}</div>}
                       {!c.audits.length && <span className="muted small">none this quarter</span>}
-                      {noQuarterAudit && c.priorAudits.length > 0 && c.hours >= POLICY.minHours && !rm && (
+                      {noQuarterAudit && c.priorAudits.length > 0 && !rm && (
                         <div className="row" style={{ marginTop: 4, gap: 6 }}>
                           <label className="check small"><input type="checkbox" checked={!!pr} onChange={e => setPrior(c.empId, e.target.checked, pr?.note ?? '')} /> use {c.priorAudits[0].qtr}Q {c.priorAudits[0].year} audits ({c.priorAudits.map(a => a.grade).join(', ')})</label>
                           {pr && <input type="text" placeholder="reason" value={pr.note} onChange={e => setPrior(c.empId, true, e.target.value)} style={{ width: 180 }} />}
@@ -229,8 +237,28 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
                     </td>
                     <td className="num" style={{ color: c.qualityGrade != null && c.qualityGrade < POLICY.hurdleGrade ? 'var(--orange)' : undefined }}>{c.qualityGrade == null ? '—' : num(c.qualityGrade, 1)}</td>
                     <td>
-                      <span className={`pill ${c.eligible ? 'ok' : 'no'}`}>{c.eligible ? 'Eligible' : 'Not eligible'}</span>
-                      {!c.eligible && <div className="small muted">{c.eligibilityReasons.join('; ')}</div>}
+                      {(() => {
+                        const ex = q.settings.exceptions?.[c.empId]
+                        if (c.exception) return (
+                          <>
+                            <span className={`pill ${c.exception.withinManual ? 'warn' : 'no'}`}>{c.exception.withinManual ? 'Eligible — LOA prorated' : 'Eligible — exception'}</span>
+                            <div className="small muted" style={{ maxWidth: 260 }}>{c.exception.summary}. Approved by {c.exception.approvedBy}: {c.exception.note}</div>
+                            <div className="row" style={{ gap: 6, marginTop: 2 }}>
+                              <button className="ghost small" onClick={() => setExceptionFor(c)}>Edit</button>
+                              <button className="ghost small danger" onClick={() => setException(c.empId, null)}>Undo</button>
+                            </div>
+                          </>
+                        )
+                        const canExcept = !c.eligible && !rm && c.failedRules.length > 0 && c.eligibilityReasons.length === c.failedRules.length
+                        return (
+                          <>
+                            <span className={`pill ${c.eligible ? 'ok' : 'no'}`}>{c.eligible ? 'Eligible' : 'Not eligible'}</span>
+                            {!c.eligible && <div className="small muted">{c.eligibilityReasons.join('; ')}</div>}
+                            {ex && !c.exception && <div className="small" style={{ color: 'var(--danger)' }}>Exception incomplete — <button className="link small" onClick={() => setExceptionFor(c)}>finish it</button> or <button className="link small" onClick={() => setException(c.empId, null)}>discard</button></div>}
+                            {canExcept && !ex && <button className="ghost small" style={{ marginTop: 4 }} onClick={() => setExceptionFor(c)}>Include anyway…</button>}
+                          </>
+                        )
+                      })()}
                     </td>
                     <td>
                       <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
@@ -258,6 +286,88 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
       </div>
 
       {info.length > 0 && <Notice kind="warn" title="For your information" items={info.map(f => f.message)} />}
+      {exceptionFor && (
+        <ExceptionDialog cruiser={exceptionFor} existing={q.settings.exceptions?.[exceptionFor.empId]}
+          onCancel={() => setExceptionFor(null)}
+          onSave={ex => { setException(exceptionFor.empId, ex); setExceptionFor(null) }} />
+      )}
+    </div>
+  )
+}
+
+/**
+ * Include a cruiser the hours/quality rule excludes. The reviewer must pick a basis, give a reason and an approver,
+ * and — unless a leave of absence brings them within the manual — tick the acknowledgment that this departs from
+ * the F&W Cruiser Manual. The relevant manual language is shown verbatim.
+ */
+function ExceptionDialog({ cruiser: c, existing, onCancel, onSave }: { cruiser: CruiserResult; existing?: Exception; onCancel: () => void; onSave: (ex: Exception) => void }) {
+  const [basis, setBasis] = useState<Exception['basis']>(existing?.basis ?? (c.failedRules.includes('quality') ? 'override' : 'loa'))
+  const [weeks, setWeeks] = useState<string>(existing?.loaWeeks != null ? String(existing.loaWeeks) : '')
+  const [note, setNote] = useState(existing?.note ?? '')
+  const [approvedBy, setApprovedBy] = useState(existing?.approvedBy ?? '')
+  const [ack, setAck] = useState(existing?.acknowledged ?? false)
+  useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k) }, [onCancel])
+
+  const draft: Exception = { basis, loaWeeks: basis === 'loa' ? Number(weeks) || 0 : undefined, note, approvedBy, acknowledged: ack, acknowledgedAt: existing?.acknowledgedAt ?? '' }
+  const verdict = evaluateException(c.hours, c.qualityGrade, c.failedRules, draft)
+  const w = Number(weeks) || 0
+  const prorated = proratedMinHours(w)
+  const needsAck = !verdict.withinManual
+  const first = c.employee.split(' ')[0]
+
+  return (
+    <div className="modal-backdrop" onClick={onCancel} role="presentation">
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="exc-title" onClick={e => e.stopPropagation()}>
+        <h2 id="exc-title">Include {c.employee} outside the eligibility rules</h2>
+        <p className="muted small">
+          On the numbers, {first} is not eligible: {c.eligibilityReasons.join('; ')}. The F&amp;W Cruiser Manual sets these requirements. You can include {first} anyway, but the reason and approver go into the workbook with the payout.
+        </p>
+
+        {c.failedRules.includes('hours') && (
+          <fieldset className="basis">
+            <legend>Why is {first} under {POLICY.minHours} hours?</legend>
+            <label className="check"><input type="radio" name="basis" checked={basis === 'loa'} onChange={() => setBasis('loa')} /> Leave of absence during the quarter — the manual prorates the minimum (item 11)</label>
+            {basis === 'loa' && (
+              <div className="loa">
+                <label className="small">Weeks of leave <input type="number" className="inline" min={0} max={12} step={0.5} value={weeks} onChange={e => setWeeks(e.target.value)} autoFocus /></label>
+                <div className="small" style={{ marginTop: 4 }}>
+                  Prorated minimum: <b>{prorated} hours</b> · {first} has <b>{num(c.hours, 2)}</b> — {c.hours >= prorated && w > 0 ? <span style={{ color: 'var(--green)' }}>meets the prorated minimum. This is within the manual.</span> : <span style={{ color: 'var(--danger)' }}>{w > 0 ? 'still short. Including them is against the manual.' : 'enter the weeks of leave.'}</span>}
+                </div>
+                <blockquote className="manual"><b>{MANUAL.loa.ref}.</b> {MANUAL.loa.text}</blockquote>
+              </div>
+            )}
+            <label className="check"><input type="radio" name="basis" checked={basis === 'override'} onChange={() => setBasis('override')} /> Another reason — this goes against the Cruiser Manual</label>
+          </fieldset>
+        )}
+
+        {needsAck && (
+          <div className="against">
+            <h3>What the Cruiser Manual says</h3>
+            <div className="small muted">{MANUAL.title}</div>
+            {c.failedRules.includes('hours') && <blockquote className="manual"><b>{MANUAL.hours.ref}.</b> {MANUAL.hours.text}</blockquote>}
+            {c.failedRules.includes('quality') && <blockquote className="manual"><b>{MANUAL.quality.ref}.</b> {MANUAL.quality.text}</blockquote>}
+            <label className="check ack">
+              <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} />
+              <span>I understand that {c.employee} does not meet the eligibility requirements of the F&amp;W Cruiser Manual{c.failedRules.includes('hours') ? ` (${MANUAL.hours.ref}: ${num(c.hours, 2)} of ${POLICY.minHours} cruising hours)` : ''}{c.failedRules.includes('quality') ? ` (${MANUAL.quality.ref}: quality score ${num(c.qualityGrade ?? 0, 1)}, 80.0 required)` : ''}, and that including them is a departure from the manual. This exception, the reason and the approver's name will be printed in the F&amp;W incentive workbook, and it changes the pool and every other cruiser's payout.</span>
+            </label>
+          </div>
+        )}
+
+        <div className="grid cols-2" style={{ marginTop: 12 }}>
+          <label className="field"><span>Reason (required)</span><input type="text" value={note} onChange={e => setNote(e.target.value)} placeholder={basis === 'loa' ? 'e.g. FMLA leave 5/4–5/15' : 'e.g. Center Manager asked to include; hours mis-tasked'} /></label>
+          <label className="field"><span>Approved by (required)</span><input type="text" value={approvedBy} onChange={e => setApprovedBy(e.target.value)} placeholder="Name of the manager approving this" /></label>
+        </div>
+
+        <div className="row between" style={{ marginTop: 16 }}>
+          <span className="small muted">{verdict.ok ? (verdict.withinManual ? 'Within the manual — no acknowledgment needed.' : 'Will be recorded as a departure from the Cruiser Manual.') : verdict.summary.charAt(0).toUpperCase() + verdict.summary.slice(1) + '.'}</span>
+          <div className="row">
+            <button onClick={onCancel}>Cancel</button>
+            <button className={needsAck ? 'danger' : 'primary'} disabled={!verdict.ok} onClick={() => onSave({ ...draft, acknowledged: needsAck ? ack : false, acknowledgedAt: new Date().toISOString() })}>
+              {needsAck ? `Include ${first} against the manual` : `Include ${first}`}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }
@@ -267,8 +377,9 @@ export function ResultsStep({ q, res, update }: StepProps) {
   const [dlMsg, setDlMsg] = useState<string | null>(null)
   const el = res.cruisers.filter(c => c.eligible).sort((a, b) => a.center.localeCompare(b.center) || a.employee.localeCompare(b.employee))
   const sum = (f: (c: typeof el[number]) => number) => el.reduce((s, c) => s + f(c), 0)
-  const ready = q.timeRows.length > 0 && q.audits.length > 0 && el.length > 0 && !res.periodMismatch
-  const blockers = res.flags.filter(f => f.severity === 'warn')
+  const ready = q.timeRows.length > 0 && q.audits.length > 0 && el.length > 0 && !res.periodMismatch && !res.labelUnparsed
+  const blockers = res.flags.filter(f => f.severity === 'warn' && !(f.kind === 'exception' && res.cruisers.some(c => c.empId === f.empId && c.exception)))
+  const exceptions = res.cruisers.filter(c => c.exception)
   const onDownload = async () => {
     setDlMsg('Preparing workbook…')
     const r = await downloadWorkbook(q, res)
@@ -277,9 +388,14 @@ export function ResultsStep({ q, res, update }: StepProps) {
   }
   return (
     <div className="stack">
+      {res.labelUnparsed && <Notice kind="error" title={`Blocked: "${q.label}" is not a quarter the app can read.`}>Rename the quarter like "1Q 2026" (pencil next to its name at the top). No audits are counted until then.</Notice>}
       {res.periodMismatch && <Notice kind="error" title={`Blocked: the time report is not ${q.label}.`}>Its dates run {res.periodMismatch.reportMonths[0]} to {res.periodMismatch.reportMonths[res.periodMismatch.reportMonths.length - 1]}. Upload the right quarter's report or rename the quarter before downloading.</Notice>}
       {!ready && !res.periodMismatch && <Notice kind="warn">Results need the time report, the CASL audits and at least one eligible cruiser.</Notice>}
       {ready && blockers.length > 0 && q.status !== 'final' && <Notice kind="warn" title={`${blockers.length} item(s) on the Review step still need a look before this is final.`} />}
+      {exceptions.length > 0 && (
+        <Notice kind={exceptions.some(c => !c.exception!.withinManual) ? 'error' : 'warn'} title={`${exceptions.length} cruiser(s) included by exception. This is printed in the workbook.`}
+          items={exceptions.map(c => `${c.employee} — ${c.exception!.summary}. Approved by ${c.exception!.approvedBy}: ${c.exception!.note}`)} />
+      )}
       <div className="grid cols-4">
         <Stat value={money(res.totalPool)} label={`total pool · ${res.eligibleCount} eligible cruisers`} />
         <Stat value={money(res.qualityPool)} label="quality (⅓)" tone="teal" />
@@ -310,16 +426,16 @@ export function ResultsStep({ q, res, update }: StepProps) {
                 <tr key={c.empId}>
                   <td className="mono">{c.center || '—'}</td><td>{c.employee}<div className="small muted mono">{c.empId}</div></td>
                   <td className="num">{num(c.hours, 1)}</td><td className="num">{num(c.plots, 0)}</td>
-                  <td className="num">{num(c.qualityGrade ?? 0, 1)}</td><td className="num">{money(c.qualityIncentive)}</td>
-                  <td className="num">{num(c.productionGrade, 3)}</td><td className="num">{money(c.productionIncentive)}</td>
-                  <td className="num">{num(c.totalPerPlot, 3)}</td><td className="num"><strong>{money(c.totalIncentive)}</strong></td>
+                  <td className="num">{num(c.qualityGrade ?? 0, 1)}</td><td className="num">{money(c.qualityPaid)}</td>
+                  <td className="num">{num(c.productionGrade, 3)}</td><td className="num">{money(c.productionPaid)}</td>
+                  <td className="num">{num(c.totalPerPlot, 3)}</td><td className="num"><strong>{money(c.totalPaid)}</strong></td>
                 </tr>
               ))}
               <tr className="total">
                 <td></td><td>Total · {el.length} cruisers</td><td className="num">{num(sum(c => c.hours), 1)}</td><td className="num">{num(sum(c => c.plots), 0)}</td>
-                <td></td><td className="num">{money(sum(c => c.qualityIncentive))}</td>
-                <td></td><td className="num">{money(sum(c => c.productionIncentive))}</td>
-                <td></td><td className="num">{money(sum(c => c.totalIncentive))}</td>
+                <td></td><td className="num">{money(sum(c => c.qualityPaid))}</td>
+                <td></td><td className="num">{money(sum(c => c.productionPaid))}</td>
+                <td></td><td className="num">{money(sum(c => c.totalPaid))}</td>
               </tr>
             </tbody>
           </table>
@@ -345,7 +461,7 @@ export function ResultsStep({ q, res, update }: StepProps) {
           <li>Standard: plots/hr = {num(res.regressionHr.slope, 4)} × acres/plot + {num(res.regressionHr.intercept, 4)}; plots/day = {num(res.regressionDay.slope, 4)} × acres/plot + {num(res.regressionDay.intercept, 3)}; fit on {res.regressionHr.n} cruiser-project combinations.</li>
           <li>Production grade = ({q.settings.dayWeight} × day grade + hour grade) ÷ {q.settings.dayWeight + 1}. Quality grade = average approved audit grade for the quarter.</li>
           <li>Scale factor = 1 + (grade − lowest eligible grade) ÷ {num(res.qualityScaleUnit, 0)} points (quality) or ÷ {num(res.productionScaleUnit, 2)} (production). Incentive = adjusted plots × scale × pool rate; the pool is paid out in full.</li>
-          <li>{res.rowsUsed} entries counted, {res.removedRows.length} removed by policy. Multipliers on {Object.keys(q.settings.plotMultipliers).length} project(s). {Object.keys(q.settings.removals).length} cruiser(s) removed by hand; {Object.keys(q.settings.priorAudits).length} using prior-quarter audits.</li>
+          <li>{res.rowsUsed} entries counted, {res.removedRows.length} removed by policy. Multipliers on {Object.keys(q.settings.plotMultipliers).length} project(s). {Object.keys(q.settings.removals).length} cruiser(s) removed by hand; {Object.keys(q.settings.priorAudits).length} using prior-quarter audits; {exceptions.length} included by exception.</li>
         </ul>
       </div>
     </div>

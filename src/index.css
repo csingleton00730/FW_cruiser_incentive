@@ -175,3 +175,18 @@ figure.chart svg g[tabindex]:hover rect, figure.chart svg g[tabindex]:focus rect
 .legend i { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 5px; vertical-align: -2px; }
 .finder { display: flex; flex-direction: column; gap: 2px; background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 4px; max-width: 100%; }
 .finder button { text-align: left; font-size: 12px; }
+
+/* Exception dialog */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(44,42,41,0.45); display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 50; }
+.modal { background: var(--paper); border-radius: 10px; border-top: 6px solid var(--orange); box-shadow: 0 20px 60px rgba(0,0,0,0.3); max-width: 720px; width: 100%; max-height: calc(100vh - 32px); overflow: auto; padding: 22px 24px; }
+.modal h2 { font-family: Georgia, serif; color: var(--ink); margin: 0 0 6px; font-size: 20px; }
+.modal h3 { font-family: Georgia, serif; color: var(--danger); margin: 0 0 4px; font-size: 15px; }
+.modal fieldset.basis { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px 12px; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.modal fieldset.basis legend { font-weight: 700; font-size: 13px; padding: 0 6px; }
+.modal .loa { margin: 0 0 4px 26px; }
+.modal .against { margin-top: 14px; padding: 12px 14px; border: 1px solid #e5b3af; background: #fbeae9; border-radius: 8px; }
+blockquote.manual { margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--teal); background: #fff; font-size: 13px; line-height: 1.45; color: var(--ink); }
+label.check.ack { display: flex; align-items: flex-start; border-radius: 8px; padding: 8px 10px; margin-top: 8px; font-size: 13px; line-height: 1.4; background: #fff; border-color: #e5b3af; }
+label.check.ack input { margin-top: 3px; flex: none; }
+button.link { border: none; background: none; padding: 0; color: var(--teal); text-decoration: underline; cursor: pointer; }
+button.danger:not(:disabled):hover, .modal button.danger:not(:disabled) { background: var(--danger); color: #fff; border-color: var(--danger); }

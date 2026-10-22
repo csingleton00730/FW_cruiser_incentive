@@ -1,9 +1,9 @@
-# Cruiser Incentive
+# SilvaIncentive
 
 Replaces the quarterly `Cruising_Incentive_Calculations` workbook for F&W Forestry Services.
 
 Upload the Crystal "Production Report Qtrly Incentive" (.xls), the CASL export (whole database) and
-Andy's SP/MP report; the app applies the fixed policy (40-hour minimum, 80 audit hurdle, F1/F2/F3/FS
+Andy's SP/MP report; the app applies the fixed policy (40-hour minimum and 80 audit hurdle from the Cruiser Manual — a cruiser can be included past these only as a recorded, acknowledged exception; F1/F2/F3/FS
 work codes only, zero-plot / zero-hour / zero-acre days removed, Western-division 3xxxx employees out),
 takes plot multipliers from the SP/MP report's scale-up table, grades production against a regression
 standard, distributes the pool, and exports an F&W-branded workbook.
@@ -21,7 +21,7 @@ npm install
 npm test               # engine + parser tests
 npm run dev            # local dev server
 npm run build          # hosted build → dist/   (no sample data)
-npm run build:review   # review build with the 1Q 2026 sample → ../Cruiser_Incentive.html (single file)
+npm run build:review   # review build with the 1Q 2026 sample → ../SilvaIncentive.html (single file)
 npm run build:artifact # review build packaged for claude.ai artifact hosting → artifact/
 node e2e.mjs           # headless browser run against the real files (needs Playwright chromium)
 ```

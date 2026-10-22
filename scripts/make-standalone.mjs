@@ -10,7 +10,7 @@ const page = `<!doctype html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Cruiser Incentive — F&W Forestry</title>
+<title>SilvaIncentive — F&W Forestry</title>
 <link rel="icon" href="${favicon}" />
 <style>
 ${readFileSync(`dist/${css}`, 'utf8')}
@@ -24,5 +24,5 @@ ${script}
 </body>
 </html>
 `
-writeFileSync('/home/claude/Cruiser_Incentive.html', page)
+writeFileSync('/home/claude/SilvaIncentive.html', page)
 console.log('standalone', (page.length / 1024).toFixed(0), 'KB')
