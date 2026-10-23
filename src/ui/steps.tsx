@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { AuditRow, CruiserResult, Exception, QuarterResult, QuarterSettings, RowEdit, TimeRow } from '../engine/types'
+import type { AuditRow, CruiserResult, Exception, QuarterResult, QuarterSettings, RowEdit, TimeRow, WaivableRule } from '../engine/types'
 import { MANUAL, POLICY, POLICY_TEXT, proratedMinHours } from '../engine/policy'
 import { evaluateException, matchMultipliers, parseQuarterLabel } from '../engine/calculate'
 import { parseCaslExport, parseMultiplierReport, parseTimeExport } from '../parsers/files'
@@ -105,11 +105,24 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
     if (!on) delete next[empId]; else next[empId] = { note }
     updateSettings({ priorAudits: next })
   }
-  const [exceptionFor, setExceptionFor] = useState<CruiserResult | null>(null)
+  const [includeFor, setIncludeFor] = useState<CruiserResult | null>(null)
   const setException = (empId: string, ex: Exception | null) => {
     const next = { ...(q.settings.exceptions ?? {}) }
     if (!ex) delete next[empId]; else next[empId] = ex
     updateSettings({ exceptions: next })
+  }
+  /** Everything the Include dialog decided, saved in ONE update so nothing is lost to the autosave. */
+  const applyInclude = (c: CruiserResult, r: IncludeResult) => {
+    const settings: QuarterSettings = { ...q.settings, exceptions: { ...(q.settings.exceptions ?? {}) }, priorAudits: { ...q.settings.priorAudits }, removals: { ...q.settings.removals } }
+    let audits = q.audits
+    if (r.audit?.kind === 'prior') settings.priorAudits[c.empId] = { note: r.audit.note }
+    if (r.audit?.kind === 'manual') {
+      const ql = parseQuarterLabel(q.label)
+      audits = [...audits, { id: newId(), auditDate: new Date().toISOString().slice(0, 10), year: ql?.year ?? null, qtr: ql?.q ?? null, cruiserName: c.employee, cruiserId: c.empId, projectId: '', grade: r.audit.grade, auditId: 'manual', status: 'Approved', cruiseType: '' }]
+    }
+    if (r.exception) settings.exceptions[c.empId] = r.exception; else delete settings.exceptions[c.empId]
+    delete settings.removals[c.empId]
+    update({ audits, settings })
   }
   const removeAudit = (id: string) => update({ audits: q.audits.filter(a => a.id !== id) })
   const addManual = () => {
@@ -205,15 +218,14 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
       {/* Cruisers */}
       <div className="card">
         <h3>Cruisers and eligibility</h3>
-        <p className="muted small">Eligibility follows policy: at least {POLICY.minHours} cruising hours and an average approved audit grade of {POLICY.hurdleGrade} or better for the quarter. A cruiser can be removed with a reason (left the company, data problem). A cruiser the hours or quality rule excludes can be included only as a recorded exception — a leave of absence that prorates the minimum (Cruiser Manual item 11), or an acknowledged departure from the manual with a reason and the approver's name. If a cruiser has the hours but no audit this quarter, you can choose to use their most recent prior audits. Every one of these choices is printed in the workbook.</p>
+        <p className="muted small">Eligibility follows policy: at least {POLICY.minHours} cruising hours and an average approved audit grade of {POLICY.hurdleGrade} or better for the quarter. To pay a cruiser the rules exclude, click <b>Include</b> on their row: the app walks you through what is missing (an audit grade, hours) and, when it goes against the Cruiser Manual, asks for the reason, the approving manager and an acknowledgment. Every inclusion is printed in the workbook. A cruiser can also be removed with a reason (left the company, data problem).</p>
         <div className="scroll">
           <table className="data">
-            <thead><tr><th>Cruiser</th><th>Center</th><th className="num">Hours</th><th className="num">Plots</th><th>Audits</th><th className="num">Quality</th><th>Status</th><th>Remove</th></tr></thead>
+            <thead><tr><th>Cruiser</th><th>Center</th><th className="num">Hours</th><th className="num">Plots</th><th>Audits</th><th className="num">Quality</th><th>Status</th><th>Include</th><th>Remove</th></tr></thead>
             <tbody>
               {res.cruisers.map(c => {
                 const rm = q.settings.removals[c.empId]
-                const pr = q.settings.priorAudits[c.empId]
-                const noQuarterAudit = !c.audits.length || c.usedPriorAudits
+                const ex = q.settings.exceptions?.[c.empId]
                 return (
                   <tr key={c.empId} className={c.eligible ? '' : 'dim'}>
                     <td>{c.employee}<div className="small muted mono">{c.empId}</div></td>
@@ -226,39 +238,33 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
                           {a.grade}{a.auditId === 'manual' && <button className="ghost x" onClick={() => removeAudit(a.id)} title="Remove this grade">×</button>}
                         </span>
                       ))}
-                      {c.usedPriorAudits && <div className="small muted">from {c.audits[0].qtr}Q {c.audits[0].year}</div>}
-                      {!c.audits.length && <span className="muted small">none this quarter</span>}
-                      {noQuarterAudit && c.priorAudits.length > 0 && !rm && (
-                        <div className="row" style={{ marginTop: 4, gap: 6 }}>
-                          <label className="check small"><input type="checkbox" checked={!!pr} onChange={e => setPrior(c.empId, e.target.checked, pr?.note ?? '')} /> use {c.priorAudits[0].qtr}Q {c.priorAudits[0].year} audits ({c.priorAudits.map(a => a.grade).join(', ')})</label>
-                          {pr && <input type="text" placeholder="reason" value={pr.note} onChange={e => setPrior(c.empId, true, e.target.value)} style={{ width: 180 }} />}
-                        </div>
-                      )}
+                      {c.usedPriorAudits && <div className="small muted">from {c.audits[0].qtr}Q {c.audits[0].year} · <button className="link small" onClick={() => setPrior(c.empId, false)}>stop using</button></div>}
+                      {!c.audits.length && <span className="muted small">none this quarter{c.priorAudits.length ? ` · ${c.priorAudits[0].qtr}Q ${c.priorAudits[0].year} available` : ''}</span>}
                     </td>
                     <td className="num" style={{ color: c.qualityGrade != null && c.qualityGrade < POLICY.hurdleGrade ? 'var(--orange)' : undefined }}>{c.qualityGrade == null ? '—' : num(c.qualityGrade, 1)}</td>
                     <td>
-                      {(() => {
-                        const ex = q.settings.exceptions?.[c.empId]
-                        if (c.exception) return (
-                          <>
-                            <span className={`pill ${c.exception.withinManual ? 'warn' : 'no'}`}>{c.exception.withinManual ? 'Eligible — LOA prorated' : 'Eligible — exception'}</span>
-                            <div className="small muted" style={{ maxWidth: 260 }}>{c.exception.summary}. Approved by {c.exception.approvedBy}: {c.exception.note}</div>
-                            <div className="row" style={{ gap: 6, marginTop: 2 }}>
-                              <button className="ghost small" onClick={() => setExceptionFor(c)}>Edit</button>
-                              <button className="ghost small danger" onClick={() => setException(c.empId, null)}>Undo</button>
-                            </div>
-                          </>
-                        )
-                        const canExcept = !c.eligible && !rm && c.failedRules.length > 0 && c.eligibilityReasons.length === c.failedRules.length
-                        return (
-                          <>
-                            <span className={`pill ${c.eligible ? 'ok' : 'no'}`}>{c.eligible ? 'Eligible' : 'Not eligible'}</span>
-                            {!c.eligible && <div className="small muted">{c.eligibilityReasons.join('; ')}</div>}
-                            {ex && !c.exception && <div className="small" style={{ color: 'var(--danger)' }}>Exception incomplete — <button className="link small" onClick={() => setExceptionFor(c)}>finish it</button> or <button className="link small" onClick={() => setException(c.empId, null)}>discard</button></div>}
-                            {canExcept && !ex && <button className="ghost small" style={{ marginTop: 4 }} onClick={() => setExceptionFor(c)}>Include anyway…</button>}
-                          </>
-                        )
-                      })()}
+                      {c.exception ? (
+                        <>
+                          <span className={`pill ${c.exception.withinManual ? 'warn' : 'no'}`}>{c.exception.withinManual ? 'Eligible — LOA prorated' : 'Eligible — exception'}</span>
+                          <div className="small muted" style={{ maxWidth: 260 }}>{c.exception.summary}. Approved by {c.exception.approvedBy}: {c.exception.note}</div>
+                        </>
+                      ) : (
+                        <>
+                          <span className={`pill ${c.eligible ? 'ok' : 'no'}`}>{c.eligible ? 'Eligible' : 'Not eligible'}</span>
+                          {!c.eligible && <div className="small muted">{c.eligibilityReasons.join('; ')}</div>}
+                          {ex && !c.exception && !rm && <div className="small" style={{ color: 'var(--danger)' }}>Inclusion not finished</div>}
+                        </>
+                      )}
+                    </td>
+                    <td>
+                      {c.exception ? (
+                        <div className="row" style={{ gap: 6, flexWrap: 'nowrap' }}>
+                          <button className="small" onClick={() => setIncludeFor(c)}>Edit</button>
+                          <button className="small danger ghost" onClick={() => setException(c.empId, null)}>Undo</button>
+                        </div>
+                      ) : !c.eligible ? (
+                        <button className="accent small include" onClick={() => setIncludeFor(c)}>Include…</button>
+                      ) : <span className="muted">—</span>}
                     </td>
                     <td>
                       <div className="row" style={{ flexWrap: 'nowrap', gap: 6 }}>
@@ -286,85 +292,126 @@ export function ReviewStep({ q, res, update, updateSettings }: StepProps) {
       </div>
 
       {info.length > 0 && <Notice kind="warn" title="For your information" items={info.map(f => f.message)} />}
-      {exceptionFor && (
-        <ExceptionDialog cruiser={exceptionFor} existing={q.settings.exceptions?.[exceptionFor.empId]}
-          onCancel={() => setExceptionFor(null)}
-          onSave={ex => { setException(exceptionFor.empId, ex); setExceptionFor(null) }} />
+      {includeFor && (
+        <IncludeDialog cruiser={includeFor} existing={q.settings.exceptions?.[includeFor.empId]}
+          onCancel={() => setIncludeFor(null)}
+          onSave={r => { applyInclude(includeFor, r); setIncludeFor(null) }} />
       )}
     </div>
   )
 }
 
+/** What the Include dialog hands back: an audit choice if the cruiser had no grade, and an exception if a rule still fails. */
+interface IncludeResult {
+  audit: null | { kind: 'prior'; note: string } | { kind: 'manual'; grade: number; note: string }
+  exception: Exception | null
+}
+
 /**
- * Include a cruiser the hours/quality rule excludes. The reviewer must pick a basis, give a reason and an approver,
- * and — unless a leave of absence brings them within the manual — tick the acknowledgment that this departs from
- * the F&W Cruiser Manual. The relevant manual language is shown verbatim.
+ * Include a cruiser the rules exclude. One dialog, in order: (1) an audit grade if they have none — prior-quarter
+ * audits or a hand-entered grade; (2) why they are under the hour minimum — a leave of absence (the manual prorates
+ * the minimum, item 11) or another reason; (3) when the inclusion goes against the Cruiser Manual, its language is
+ * shown and the reviewer must acknowledge it and name the approving manager. Everything is printed in the workbook.
  */
-function ExceptionDialog({ cruiser: c, existing, onCancel, onSave }: { cruiser: CruiserResult; existing?: Exception; onCancel: () => void; onSave: (ex: Exception) => void }) {
-  const [basis, setBasis] = useState<Exception['basis']>(existing?.basis ?? (c.failedRules.includes('quality') ? 'override' : 'loa'))
+function IncludeDialog({ cruiser: c, existing, onCancel, onSave }: { cruiser: CruiserResult; existing?: Exception; onCancel: () => void; onSave: (r: IncludeResult) => void }) {
+  const hasGrade = c.qualityGrade != null
+  const [auditKind, setAuditKind] = useState<'prior' | 'manual'>(c.priorAudits.length ? 'prior' : 'manual')
+  const [manualGrade, setManualGrade] = useState('')
+  const [auditNote, setAuditNote] = useState('')
+  const [basis, setBasis] = useState<Exception['basis']>(existing?.basis ?? 'loa')
   const [weeks, setWeeks] = useState<string>(existing?.loaWeeks != null ? String(existing.loaWeeks) : '')
   const [note, setNote] = useState(existing?.note ?? '')
   const [approvedBy, setApprovedBy] = useState(existing?.approvedBy ?? '')
   const [ack, setAck] = useState(existing?.acknowledged ?? false)
   useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }; window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k) }, [onCancel])
 
-  const draft: Exception = { basis, loaWeeks: basis === 'loa' ? Number(weeks) || 0 : undefined, note, approvedBy, acknowledged: ack, acknowledgedAt: existing?.acknowledgedAt ?? '' }
-  const verdict = evaluateException(c.hours, c.qualityGrade, c.failedRules, draft)
+  const first = c.employee.split(' ')[0]
+  const priorMean = c.priorAudits.length ? c.priorAudits.reduce((t, a) => t + (a.grade ?? 0), 0) / c.priorAudits.length : null
+  const manualNum = manualGrade.trim() === '' ? null : Number(manualGrade)
+  const draftGrade: number | null = hasGrade ? c.qualityGrade : auditKind === 'prior' ? priorMean : (manualNum != null && Number.isFinite(manualNum) ? manualNum : null)
+  const auditOk = hasGrade || (draftGrade != null && !!auditNote.trim())
+  const failed: WaivableRule[] = []
+  if (c.hours < POLICY.minHours) failed.push('hours')
+  if (draftGrade != null && draftGrade < POLICY.hurdleGrade) failed.push('quality')
+  const needsException = failed.length > 0
+  const draft: Exception = { basis: failed.includes('hours') ? basis : 'override', loaWeeks: basis === 'loa' ? Number(weeks) || 0 : undefined, note, approvedBy, acknowledged: ack, acknowledgedAt: existing?.acknowledgedAt ?? '' }
+  const verdict = evaluateException(c.hours, draftGrade, failed, draft)
+  const needsAck = needsException && !verdict.withinManual
   const w = Number(weeks) || 0
   const prorated = proratedMinHours(w)
-  const needsAck = !verdict.withinManual
-  const first = c.employee.split(' ')[0]
+  const canSave = draftGrade != null && auditOk && (!needsException || verdict.ok)
+  const status = draftGrade == null ? (hasGrade ? '' : 'Enter an audit grade to continue.')
+    : !auditOk ? 'Say why the audit grade is being supplied this way.'
+    : !needsException ? `${first} meets the rules with this grade — no exception needed.`
+    : verdict.ok ? (verdict.withinManual ? 'Within the manual — no acknowledgment needed.' : 'Will be recorded as going against the Cruiser Manual and company policy.')
+    : verdict.summary.charAt(0).toUpperCase() + verdict.summary.slice(1) + '.'
+  let step = 0
 
   return (
     <div className="modal-backdrop" onClick={onCancel} role="presentation">
-      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="exc-title" onClick={e => e.stopPropagation()}>
-        <h2 id="exc-title">Include {c.employee} outside the eligibility rules</h2>
-        <p className="muted small">
-          On the numbers, {first} is not eligible: {c.eligibilityReasons.join('; ')}. The F&amp;W Cruiser Manual sets these requirements. You can include {first} anyway, but the reason and approver go into the workbook with the payout.
-        </p>
+      <div className="modal" role="dialog" aria-modal="true" aria-labelledby="inc-title" onClick={e => e.stopPropagation()}>
+        <h2 id="inc-title">Include {c.employee}</h2>
+        <p className="muted small">On the numbers, {first} is not eligible: {c.eligibilityReasons.join('; ') || 'see below'}. Work through the steps below; what you choose here is printed in the F&amp;W workbook next to the payout.</p>
 
-        {c.failedRules.includes('hours') && (
+        {!hasGrade && (
           <fieldset className="basis">
-            <legend>Why is {first} under {POLICY.minHours} hours?</legend>
+            <legend>{++step}. Audit grade — {first} has no approved audit this quarter</legend>
+            {c.priorAudits.length > 0 && (
+              <label className="check"><input type="radio" name="audit" checked={auditKind === 'prior'} onChange={() => setAuditKind('prior')} /> Use the most recent prior audits: {c.priorAudits[0].qtr}Q {c.priorAudits[0].year} ({c.priorAudits.map(a => a.grade).join(', ')} → {num(priorMean ?? 0, 1)})</label>
+            )}
+            <label className="check"><input type="radio" name="audit" checked={auditKind === 'manual'} onChange={() => setAuditKind('manual')} /> Enter a grade by hand
+              {auditKind === 'manual' && <input type="number" className="inline" step="0.1" min={0} max={100} placeholder="Grade" value={manualGrade} onChange={e => setManualGrade(e.target.value)} style={{ marginLeft: 8 }} autoFocus />}
+            </label>
+            {c.priorAudits.length === 0 && <div className="small muted">No prior-quarter audits are in the CASL export for {first}. If an audit exists, refresh CASL and re-upload it instead of typing the grade.</div>}
+            <label className="field" style={{ width: '100%' }}><span>Why (required) — e.g. "audit not yet in CASL", "no plots available to audit this quarter"</span><input type="text" value={auditNote} onChange={e => setAuditNote(e.target.value)} /></label>
+          </fieldset>
+        )}
+
+        {failed.includes('hours') && (
+          <fieldset className="basis">
+            <legend>{++step}. Why is {first} under {POLICY.minHours} hours? ({num(c.hours, 2)} recorded)</legend>
             <label className="check"><input type="radio" name="basis" checked={basis === 'loa'} onChange={() => setBasis('loa')} /> Leave of absence during the quarter — the manual prorates the minimum (item 11)</label>
             {basis === 'loa' && (
               <div className="loa">
-                <label className="small">Weeks of leave <input type="number" className="inline" min={0} max={12} step={0.5} value={weeks} onChange={e => setWeeks(e.target.value)} autoFocus /></label>
+                <label className="small">Weeks of leave <input type="number" className="inline" min={0} max={12} step={0.5} value={weeks} onChange={e => setWeeks(e.target.value)} autoFocus={hasGrade} /></label>
                 <div className="small" style={{ marginTop: 4 }}>
-                  Prorated minimum: <b>{prorated} hours</b> · {first} has <b>{num(c.hours, 2)}</b> — {c.hours >= prorated && w > 0 ? <span style={{ color: 'var(--green)' }}>meets the prorated minimum. This is within the manual.</span> : <span style={{ color: 'var(--danger)' }}>{w > 0 ? 'still short. Including them is against the manual.' : 'enter the weeks of leave.'}</span>}
+                  Prorated minimum: <b>{prorated} hours</b> · {first} has <b>{num(c.hours, 2)}</b> — {c.hours >= prorated && w > 0 && w < 12 ? <span style={{ color: 'var(--green)' }}>meets the prorated minimum. This is within the manual.</span> : <span style={{ color: 'var(--danger)' }}>{w > 0 ? 'still short, so including them goes against the manual.' : 'enter the weeks of leave.'}</span>}
                 </div>
                 <blockquote className="manual"><b>{MANUAL.loa.ref}.</b> {MANUAL.loa.text}</blockquote>
               </div>
             )}
-            <label className="check"><input type="radio" name="basis" checked={basis === 'override'} onChange={() => setBasis('override')} /> Another reason — this goes against the Cruiser Manual</label>
+            <label className="check"><input type="radio" name="basis" checked={basis === 'override'} onChange={() => setBasis('override')} /> Another reason</label>
           </fieldset>
         )}
 
         {needsAck && (
           <div className="against">
-            <h3>What the Cruiser Manual says</h3>
+            <h3>{++step}. This goes against the Cruiser Manual and F&amp;W company policy</h3>
             <div className="small muted">{MANUAL.title}</div>
-            {c.failedRules.includes('hours') && <blockquote className="manual"><b>{MANUAL.hours.ref}.</b> {MANUAL.hours.text}</blockquote>}
-            {c.failedRules.includes('quality') && <blockquote className="manual"><b>{MANUAL.quality.ref}.</b> {MANUAL.quality.text}</blockquote>}
+            {failed.includes('hours') && <blockquote className="manual"><b>{MANUAL.hours.ref}.</b> {MANUAL.hours.text}</blockquote>}
+            {failed.includes('quality') && <blockquote className="manual"><b>{MANUAL.quality.ref}.</b> {MANUAL.quality.text}</blockquote>}
             <label className="check ack">
               <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} />
-              <span>I understand that {c.employee} does not meet the eligibility requirements of the F&amp;W Cruiser Manual{c.failedRules.includes('hours') ? ` (${MANUAL.hours.ref}: ${num(c.hours, 2)} of ${POLICY.minHours} cruising hours)` : ''}{c.failedRules.includes('quality') ? ` (${MANUAL.quality.ref}: quality score ${num(c.qualityGrade ?? 0, 1)}, 80.0 required)` : ''}, and that including them is a departure from the manual. This exception, the reason and the approver's name will be printed in the F&amp;W incentive workbook, and it changes the pool and every other cruiser's payout.</span>
+              <span>I understand that {c.employee} does not meet the eligibility requirements of the F&amp;W Cruiser Manual{failed.includes('hours') ? ` (${MANUAL.hours.ref}: ${num(c.hours, 2)} of ${POLICY.minHours} cruising hours)` : ''}{failed.includes('quality') ? ` (${MANUAL.quality.ref}: quality score ${num(draftGrade ?? 0, 1)}, 80.0 required)` : ''}, and that including them goes against the Cruiser Manual and F&amp;W company policy. This exception, the reason and the approver's name will be printed in the F&amp;W incentive workbook, and it changes the pool and every other cruiser's payout.</span>
             </label>
           </div>
         )}
 
-        <div className="grid cols-2" style={{ marginTop: 12 }}>
-          <label className="field"><span>Reason (required)</span><input type="text" value={note} onChange={e => setNote(e.target.value)} placeholder={basis === 'loa' ? 'e.g. FMLA leave 5/4–5/15' : 'e.g. Center Manager asked to include; hours mis-tasked'} /></label>
-          <label className="field"><span>Approved by (required)</span><input type="text" value={approvedBy} onChange={e => setApprovedBy(e.target.value)} placeholder="Name of the manager approving this" /></label>
-        </div>
+        {needsException && (
+          <div className="grid cols-2" style={{ marginTop: 12 }}>
+            <label className="field"><span>Reason (required)</span><input type="text" value={note} onChange={e => setNote(e.target.value)} placeholder={basis === 'loa' && failed.includes('hours') ? 'e.g. FMLA leave 5/4–5/15' : 'e.g. Center Manager asked to include; hours mis-tasked'} /></label>
+            <label className="field"><span>Approved by (required)</span><input type="text" value={approvedBy} onChange={e => setApprovedBy(e.target.value)} placeholder="Name of the manager approving this" /></label>
+          </div>
+        )}
 
         <div className="row between" style={{ marginTop: 16 }}>
-          <span className="small muted">{verdict.ok ? (verdict.withinManual ? 'Within the manual — no acknowledgment needed.' : 'Will be recorded as a departure from the Cruiser Manual.') : verdict.summary.charAt(0).toUpperCase() + verdict.summary.slice(1) + '.'}</span>
+          <span className="small muted">{status}</span>
           <div className="row">
             <button onClick={onCancel}>Cancel</button>
-            <button className={needsAck ? 'danger' : 'primary'} disabled={!verdict.ok} onClick={() => onSave({ ...draft, acknowledged: needsAck ? ack : false, acknowledgedAt: new Date().toISOString() })}>
-              {needsAck ? `Include ${first} against the manual` : `Include ${first}`}
-            </button>
+            <button className={needsAck ? 'danger' : 'primary'} disabled={!canSave} onClick={() => onSave({
+              audit: hasGrade ? null : auditKind === 'prior' ? { kind: 'prior', note: auditNote.trim() } : { kind: 'manual', grade: draftGrade!, note: auditNote.trim() },
+              exception: needsException ? { ...draft, acknowledged: needsAck ? ack : false, acknowledgedAt: new Date().toISOString() } : null,
+            })}>Include {first}</button>
           </div>
         </div>
       </div>

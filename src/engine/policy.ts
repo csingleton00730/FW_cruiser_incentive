@@ -70,5 +70,5 @@ export const POLICY_TEXT = [
   `Western-division employees (Emp # starting with ${POLICY.excludedEmpIdPrefixes.join(', ')}) are not in the North & South program and are removed.`,
   'Plot multipliers come from the scale-up factor table in the SP/MP report. A project not in that table has a factor of 1.',
   'Single-product and multi-product cruisers are paid from the same pool.',
-  'Cruisers can be removed from a quarter with a written reason. A cruiser the hours or quality rule excludes can be included only as a recorded exception: a leave-of-absence proration (manual item 11), or an acknowledged departure from the Cruiser Manual with the approver’s name and reason. Every exception is printed in the F&W workbook.',
+  'Cruisers can be removed from a quarter with a written reason. A cruiser the hours or quality rule excludes can be included only as a recorded exception: a leave-of-absence proration (manual item 11), or an acknowledged departure from the Cruiser Manual and company policy with the approver’s name and reason. Every exception is printed in the F&W workbook.',
 ]
