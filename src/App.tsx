@@ -37,6 +37,7 @@ export default function App() {
   const [view, setView] = useState<View>({ kind: 'home' })
   const refresh = useCallback(async () => { setList(await repository.list()) }, [])
   useEffect(() => { refresh() }, [refresh])
+  useEffect(() => { window.scrollTo({ top: 0 }) }, [view.kind])
 
   const open = async (id: string) => { const q = await repository.get(id); if (q) setView({ kind: 'quarter', q }) }
   const create = async (label: string) => {
@@ -149,6 +150,7 @@ function QuarterView({ initial }: { initial: Quarter }) {
   const updateSettings = useCallback((patch: Partial<QuarterSettings>) => update({ settings: { ...q.settings, ...patch } }), [q, update])
 
   const res = useMemo(() => calculateQuarter(q.timeRows, q.audits, q.settings, { quarterLabel: q.label, multiplierTable: q.multiplierTable }), [q.timeRows, q.audits, q.settings, q.label, q.multiplierTable])
+  useEffect(() => { window.scrollTo({ top: 0 }) }, [step]) // each step starts at the top, not where the last one was scrolled
   const Step = STEPS[step].comp
   const canNext = step === 0 ? q.timeRows.length > 0 : true
 

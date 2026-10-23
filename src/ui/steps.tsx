@@ -422,7 +422,7 @@ function IncludeDialog({ cruiser: c, existing, onCancel, onSave }: { cruiser: Cr
 // ---------------------------------------------------------------- 3. Results
 export function ResultsStep({ q, res, update }: StepProps) {
   const [dlMsg, setDlMsg] = useState<string | null>(null)
-  const el = res.cruisers.filter(c => c.eligible).sort((a, b) => a.center.localeCompare(b.center) || a.employee.localeCompare(b.employee))
+  const el = res.cruisers.filter(c => c.eligible).sort((a, b) => b.totalPaid - a.totalPaid || a.employee.localeCompare(b.employee)) // highest payout first
   const sum = (f: (c: typeof el[number]) => number) => el.reduce((s, c) => s + f(c), 0)
   const ready = q.timeRows.length > 0 && q.audits.length > 0 && el.length > 0 && !res.periodMismatch && !res.labelUnparsed
   const blockers = res.flags.filter(f => f.severity === 'warn' && !(f.kind === 'exception' && res.cruisers.some(c => c.empId === f.empId && c.exception)))

@@ -94,7 +94,7 @@ export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook 
   const wb = new ExcelJS.Workbook()
   wb.creator = 'SilvaIncentive — F&W Forestry Services'
   wb.created = new Date()
-  const el = res.cruisers.filter(c => c.eligible).sort((a, b) => a.center.localeCompare(b.center) || a.employee.localeCompare(b.employee))
+  const el = res.cruisers.filter(c => c.eligible).sort((a, b) => b.totalPaid - a.totalPaid || a.employee.localeCompare(b.employee)) // highest payout first
   const sum = (f: (c: typeof el[number]) => number) => el.reduce((s, c) => s + f(c), 0)
   const s: QuarterSettings = q.settings
 
@@ -154,7 +154,7 @@ export function buildWorkbook(q: Quarter, res: QuarterResult): ExcelJS.Workbook 
     { header: 'Day Grade', key: 'dg', width: 8, fmt: NUM3 },
     { header: 'Production Grade', key: 'pg', width: 10, fmt: NUM3 },
     { header: 'Total Incentive', key: 'ti', width: 12, fmt: CUR },
-  ], res.cruisers.map(c => ({
+  ], [...res.cruisers].sort((a, b) => Number(b.eligible) - Number(a.eligible) || b.totalPaid - a.totalPaid || a.employee.localeCompare(b.employee)).map(c => ({
     center: c.center, empId: c.empId, name: c.employee, el: c.exception ? (c.exception.withinManual ? 'Yes — LOA prorated' : 'Yes — EXCEPTION') : c.eligible ? 'Yes' : 'No',
     reason: c.exception ? `${c.exception.summary}; approved by ${c.exception.approvedBy}: ${c.exception.note}` : c.eligibilityReasons.join('; '),
     hours: r2(c.hours), days: c.days, op: Math.round(c.originalPlots), ap: r2(c.plots), acres: r2(c.acres),
